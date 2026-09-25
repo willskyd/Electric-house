@@ -1,65 +1,1336 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownLeft, ArrowUpRight, Bell, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, LogIn, LogOut, Menu, MoreHorizontal, Package, Plus, Search, Settings, ShoppingCart, SlidersHorizontal, Sparkles, Store, Sun, Moon, UserRound, Users, WalletCards, X } from 'lucide-react'
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  Bell,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  CircleDollarSign,
+  ClipboardList,
+  CreditCard,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  Menu,
+  MoreHorizontal,
+  Package,
+  Plus,
+  Search,
+  Settings,
+  ShoppingCart,
+  SlidersHorizontal,
+  Sparkles,
+  Store,
+  Sun,
+  Moon,
+  UserRound,
+  Users,
+  WalletCards,
+  X,
+} from 'lucide-react'
 
-type Section = 'Overview' | 'Stocks' | 'New Stocks' | 'Debt' | 'Paid' | 'Settings' | 'Team members'
-type Product = { id:number; name:string; sku:string; category:string; stock:number; price:number; status:string }
-type DebtItem = { name:string; price:number }
-type Payment = { id:number; amount:number; date:string }
-type Debt = { id:number; customer:string; invoice:string; items:DebtItem[]; amount:number; payments:Payment[]; due:string; createdAt:string; paidAt?:string }
-type Activity = { id:number; text:string; time:string }
-type Receipt = { id:number; name:string; model:string; quantity:number; invoice:string; date:string }
+import { Sidebar } from '../components/dashboard/Sidebar'
+import { Topbar } from '../components/dashboard/Topbar'
+import MobileNav from '../components/dashboard/MobileNav'
+import Inbox from '../components/dashboard/Inbox'
+import { LoginScreen } from '../components/dashboard/LoginScreen'
+import { OverviewSection } from '../components/dashboard/sections/OverviewSection'
+import { initialActivities, initialDebts, initialProducts } from '../components/dashboard/data'
+import type { Activity, Debt, Product, Payment, Receipt, Section } from '../components/dashboard/types'
+import { money, now, Stat, daysAgo } from '../components/dashboard/utils'
 
-const now = () => new Date().toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' })
-let activeCurrency = 'NGN'
-const money = (n:number) => new Intl.NumberFormat('en-NG',{style:'currency',currency:activeCurrency,maximumFractionDigits:2}).format(Number.isFinite(n) ? n : 0)
-const initialProducts:Product[] = [
- {id:1,name:'Premium Rice 25kg',sku:'RIC-2501',category:'Groceries',stock:248,price:38.5,status:'In stock'},
- {id:2,name:'Sunflower Oil 5L',sku:'OIL-5002',category:'Groceries',stock:86,price:14.9,status:'In stock'},
- {id:3,name:'Blue Label Tea',sku:'TEA-1008',category:'Beverages',stock:22,price:8.25,status:'Low stock'},
- {id:4,name:'Basmati Rice 10kg',sku:'RIC-1004',category:'Groceries',stock:0,price:21.2,status:'Out of stock'},
- {id:5,name:'Sparkling Water 12pk',sku:'WAT-1210',category:'Beverages',stock:64,price:11.75,status:'In stock'},
-]
-const initialDebts:Debt[] = [
- {id:1,customer:'Harbor Market',invoice:'INV-1048',items:[{name:'Premium Rice 25kg',price:3080},{name:'Sunflower Oil 5L',price:1520}],amount:4600,payments:[{id:11,amount:2100,date:'Jun 18, 2026, 10:14 AM'}],due:'Today',createdAt:'Jun 12, 2026, 9:40 AM'},
- {id:2,customer:'Maya Grocers',invoice:'INV-1045',items:[{name:'Basmati Rice 10kg',price:1710},{name:'Blue Label Tea',price:1140}],amount:2850,payments:[{id:12,amount:1500,date:'Jun 20, 2026, 2:30 PM'}],due:'Jun 28',createdAt:'Jun 11, 2026, 3:12 PM'},
- {id:3,customer:'Westside Cafe',invoice:'INV-1039',items:[{name:'Sparkling Water 12pk',price:1920}],amount:1920,payments:[{id:13,amount:1920,date:'Jun 21, 2026, 11:05 AM'}],due:'Jul 02',createdAt:'Jun 09, 2026, 11:05 AM',paidAt:'Jun 21, 2026, 11:05 AM'},
-]
-const nav = [{label:'Overview',icon:LayoutDashboard},{label:'Stocks',icon:Package},{label:'New Stocks',icon:ClipboardList},{label:'Debt',icon:CreditCard},{label:'Paid',icon:CircleDollarSign}]
+export default function Page() {
+  const [section, setSection] = useState<Section>('Overview')
+  const [products, setProducts] = useState<Product[]>([])
+const [debts, setDebts] = useState<Debt[]>([])
+  const [receipts, setReceipts] = useState<Receipt[]>([])
+  const [deleteProduct, setDeleteProduct] = useState<Product | null>(null)
+  const [deleteReceipt, setDeleteReceipt] = useState<Receipt | null>(null)
+  const [hydrated, setHydrated] = useState(false)
+  const hasLoadedState = useRef(false)
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('All')
+  const [dark, setDark] = useState(true)
+  const [settings, setSettings] = useState({ workspace: 'Acme Market', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
+  const [sidebar, setSidebar] = useState(true)
+  const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
+  const [selectedDebt, setSelectedDebt] = useState<Debt | null>(null)
+  const [toast, setToast] = useState('')
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [notifications, setNotifications] = useState(false)
+  const [signedIn, setSignedIn] = useState(true)
+  const [activities, setActivities] = useState<Activity[]>([])
+  const [selectedInbox, setSelectedInbox] = useState<Activity | null>(null)
 
-export default function Page(){
- const [section,setSection]=useState<Section>('Overview'); const [products,setProducts]=useState<Product[]>(initialProducts); const [debts,setDebts]=useState<Debt[]>(initialDebts); const [receipts,setReceipts]=useState<Receipt[]>([{id:1,name:'June grocery delivery',model:'MEC-RIC-2501',quantity:180,invoice:'INV-STK-018',date:'Jun 20, 2026, 4:20 PM'},{id:2,name:'Beverage restock',model:'MEC-BEV-5002',quantity:96,invoice:'INV-STK-019',date:'Jun 18, 2026, 9:15 AM'},{id:3,name:'Weekend top-up',model:'MEC-MIX-1020',quantity:42,invoice:'INV-STK-020',date:'Jun 16, 2026, 1:00 PM'}]); const [deleteProduct,setDeleteProduct]=useState<Product|null>(null); const [hydrated,setHydrated]=useState(false); const hasLoadedState=useRef(false); const [query,setQuery]=useState(''); const [statusFilter,setStatusFilter]=useState('All'); const [dark,setDark]=useState(true); const [settings,setSettings]=useState({workspace:'Acme Market',currency:'NGN',notifications:'All activity',lowStockThreshold:'30',dateFormat:'MMM D, YYYY'}); const [sidebar,setSidebar]=useState(true); const [modal,setModal]=useState<'product'|'debt'|'receipt'|'detail'|'login'|null>(null); const [selectedDebt,setSelectedDebt]=useState<Debt|null>(null); const [toast,setToast]=useState(''); const [menuOpen,setMenuOpen]=useState(false); const [notifications,setNotifications]=useState(false); const [signedIn,setSignedIn]=useState(true); const [activities,setActivities]=useState<Activity[]>([{id:1,text:'Payment received from Westside Cafe',time:'Jun 21, 2026, 11:05 AM'},{id:2,text:'New stock receipt completed',time:'Jun 20, 2026, 4:20 PM'},{id:3,text:'Debt added for Harbor Market',time:'Jun 12, 2026, 9:40 AM'}])
- useEffect(()=>{try{const raw=localStorage.getItem('micro-mec-state');const saved=raw?JSON.parse(raw):null;if(saved&&typeof saved==='object'){if(Array.isArray(saved.products))setProducts(saved.products);if(Array.isArray(saved.debts))setDebts(saved.debts);if(Array.isArray(saved.receipts))setReceipts(saved.receipts);if(saved.settings&&typeof saved.settings==='object')setSettings((current)=>({...current,...saved.settings}));if(Array.isArray(saved.activities))setActivities(saved.activities)}}catch{localStorage.removeItem('micro-mec-state')} finally{hasLoadedState.current=true;setHydrated(true)}},[])
- useEffect(()=>{if(!hydrated||!hasLoadedState.current)return;localStorage.setItem('micro-mec-state',JSON.stringify({products,debts,receipts,settings,activities}))},[hydrated,products,debts,receipts,settings,activities])
- activeCurrency=settings.currency
- const notify=(text:string)=>{setToast(text);setActivities(a=>[{id:Date.now(),text,time:now()},...a].slice(0,8));window.setTimeout(()=>setToast(''),2600)}
- const outstanding=debts.filter(d=>!d.paidAt).reduce((sum,d)=>sum+Math.max(0,d.amount-d.payments.reduce((a,p)=>a+p.amount,0)),0)
- const filteredProducts=useMemo(()=>products.filter(p=>`${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase())&&(statusFilter==='All'||p.status===statusFilter)),[products,query,statusFilter])
- const visibleDebts=useMemo(()=>debts.filter(d=>section==='Paid'?!!d.paidAt:!d.paidAt).filter(d=>`${d.customer} ${d.invoice}`.toLowerCase().includes(query.toLowerCase())),[debts,query,section])
- const go=(s:Section)=>{setSection(s);setQuery('');setStatusFilter('All');setNotifications(false)}
- const signOut=()=>{setSignedIn(false);setMenuOpen(false);setToast('Signed out successfully')}
- if(!signedIn)return <Login onSignIn={()=>{setSignedIn(true);setToast('Welcome back')}} />
- const addProduct=(e:React.FormEvent<HTMLFormElement>)=>{e.preventDefault();const f=new FormData(e.currentTarget);const stock=Number(f.get('stock'));setProducts(p=>[{id:Date.now(),name:String(f.get('name')),sku:`NEW-${String(Date.now()).slice(-4)}`,category:String(f.get('category')),stock,price:Number(f.get('price')),status:stock===0?'Out of stock':stock<30?'Low stock':'In stock'},...p]);setModal(null);notify('Product added to stock')}
- const addDebt=(e:React.FormEvent<HTMLFormElement>)=>{e.preventDefault();const f=new FormData(e.currentTarget);const amount=Number(f.get('amount'));const d:Debt={id:Date.now(),customer:String(f.get('customer')),invoice:`INV-${String(Date.now()).slice(-4)}`,items:[{name:String(f.get('item')),price:amount}],amount,payments:[],due:'Not set',createdAt:now()};setDebts(x=>[d,...x]);setModal(null);notify(`Debt added for ${d.customer}`)}
- return <div className={dark?'app-shell dark':'app-shell'}>
-  <aside className={`sidebar ${sidebar?'':'sidebar-collapsed'}`}><div className="brand"><div className="brand-mark"><Store/></div>{sidebar&&<><strong>micro-mec</strong><span className="brand-dot"/></>}</div><div className="workspace"><div className="avatar">AM</div>{sidebar&&<div><b>{settings.workspace}</b><small>Workspace</small></div>}<ChevronDown className="workspace-chevron"/></div><p className="nav-label">Workspace</p><nav>{nav.map(({label,icon:Icon})=><button key={label} className={section===label?'nav-item active':'nav-item'} onClick={()=>go(label as Section)} title={!sidebar?label:undefined}><Icon/>{sidebar&&<span>{label}</span>}{sidebar&&label==='New Stocks'&&<span className="nav-count">3</span>}</button>)}</nav><div className="sidebar-bottom"><p className="nav-label">Manage</p><button className={`nav-item ${section==='Settings'?'active':''}`} onClick={()=>go('Settings')}><Settings/>{sidebar&&<span>Settings</span>}</button><button className={`nav-item ${section==='Team members'?'active':''}`} onClick={()=>go('Team members')}><Users/>{sidebar&&<span>Team members</span>}</button><div className="help-card">{sidebar&&<><Sparkles/><div><b>Need a hand?</b><small>Contact your admin</small></div></>}</div></div></aside>
-  <main className="main-content"><header className="topbar"><button className="icon-button" onClick={()=>setSidebar(!sidebar)} aria-label="Toggle sidebar">{sidebar?<ChevronLeft/>:<Menu/>}</button><div className="breadcrumbs"><span>Workspace</span><ChevronRight/><b>{section}</b></div><div className="top-actions"><button className="icon-button" onClick={()=>setDark(!dark)} aria-label="Toggle theme">{dark?<Sun/>:<Moon/>}</button><div className="notification-wrap"><button className="icon-button notification" onClick={()=>setNotifications(!notifications)} aria-label="Notifications"><Bell/><i/></button>{notifications&&<div className="notification-panel"><div className="panel-title"><b>Activity</b><span>Recent updates</span></div>{activities.map(a=><div className="activity" key={a.id}><div className="activity-dot"/><div><b>{a.text}</b><small>{a.time}</small></div></div>)}</div>}</div><div className="profile-wrap"><button className="profile" onClick={()=>setMenuOpen(!menuOpen)}><div className="avatar small">AM</div><span>Alex Morgan</span><ChevronDown/></button>{menuOpen&&<div className="profile-menu"><b>Alex Morgan</b><small>Administrator</small><hr/><button onClick={signOut}><LogOut/> Sign out</button></div>}</div></div></header>
-  <div className="page-wrap"><div className="page-heading"><div><div className="eyebrow">{section==='Overview'?'Good morning, Alex':'Workspace'}</div><h1>{section}</h1><p>{section==='Overview'?'A clear view of your market, stock, and customer accounts.':section==='Debt'?'Stay on top of outstanding customer balances.':section==='Paid'?'A record of completed customer payments.':section==='Settings'?'Manage workspace preferences and access.':section==='Team members'?'People with access to this workspace.':section==='New Stocks'?'Review incoming inventory and recent receipts.':'Keep an eye on your products and stock levels.'}</p></div>{!['Overview','Paid','Settings','Team members'].includes(section)&&<button className="primary-button" onClick={()=>setModal(section==='Debt'?'debt':section==='New Stocks'?'receipt':'product')}><Plus/>{section==='Debt'?'Add debt':section==='New Stocks'?'Record stock':'Add product'}</button>}</div>
-   {section==='Overview'&&<Overview outstanding={outstanding} onGo={go}/>} {section==='Stocks'&&<><div className="stat-grid"><Stat icon={<Package/>} label="Total products" value={products.length.toLocaleString()} change="+12.5%" positive/><Stat icon={<TrendingUpIcon/>} label="Total stock value" value={money(products.reduce((a,p)=>a+p.stock*p.price,0))} change="+8.2%" positive/><Stat icon={<CircleAlert/>} label="Low stock items" value={products.filter(p=>p.status==='Low stock').length.toString()} change="Needs attention"/><Stat icon={<WalletCards/>} label="Out of stock" value={products.filter(p=>p.stock===0).length.toString()} change="-2 this week" positive/></div><section className="panel"><Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All','In stock','Low stock','Out of stock']}/><ProductTable products={filteredProducts} onNotify={notify} onStatusChange={(id,status)=>{setProducts(ps=>ps.map(p=>p.id===id?{...p,status}:p));notify('Stock status updated')}} onEdit={(id,key,value)=>setProducts(ps=>ps.map(p=>p.id===id?{...p,[key]:Number(value)||0}:p))} onDelete={id=>setDeleteProduct(products.find(p=>p.id===id)??null)}/></section></>}{section==='New Stocks'&&<section className="panel"><Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All','Completed']}/><Receipts receipts={receipts} onEdit={(id,key,value)=>setReceipts(rs=>rs.map(r=>r.id===id?{...r,[key]:key==='quantity'?Number(value)||0:value}:r))} onDelete={id=>{if(window.confirm('Are you sure you want to delete this invoice?')){setReceipts(rs=>rs.filter(r=>r.id!==id));notify('Invoice deleted')}}}/></section>}{(section==='Debt'||section==='Paid')&&<><div className="debt-total"><div><span>{section==='Paid'?'Total paid history':'Total Outstanding Debt'}</span><strong>{section==='Paid'?money(debts.filter(d=>d.paidAt).reduce((a,d)=>a+d.amount,0)):money(outstanding)}</strong></div><CircleDollarSign/></div><section className="panel"><Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All','Overdue','Due soon','On track']}/><DebtTable debts={visibleDebts} paid={section==='Paid'} onOpen={d=>{setSelectedDebt(d);setModal('detail')}}/></section></>}{section==='Settings'&&<SettingsPage settings={settings} setSettings={setSettings} onSave={()=>notify('Settings saved successfully')}/> }{section==='Team members'&&<TeamPage/>}</div></main>
-  {modal&&modal!=='detail'&&<RecordModal type={modal} onClose={()=>setModal(null)} onSubmit={modal==='product'?addProduct:modal==='debt'?addDebt:(e)=>{e.preventDefault();const f=new FormData(e.currentTarget);const r:Receipt={id:Date.now(),name:String(f.get('name')),model:String(f.get('model')),quantity:Number(f.get('quantity'))||0,invoice:String(f.get('invoice')),date:now()};setReceipts(rs=>[r,...rs]);setModal(null);notify('Stock invoice recorded')}}/>}{modal==='detail'&&selectedDebt&&<DebtDetail debt={selectedDebt} readOnly={section==='Paid'} onClose={()=>{setModal(null);setSelectedDebt(null)}} onSave={(d,fullyPaid)=>{setDebts(x=>x.map(item=>item.id===d.id?{...d,paidAt:fullyPaid?now():d.paidAt}:item));setModal(null);setSelectedDebt(null);notify(fullyPaid?'Debt marked fully paid':'Debt updated')}}/>}{deleteProduct&&<div className="confirm-backdrop" role="presentation"><section className="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="delete-stock-title"><div className="confirm-icon"><CircleAlert/></div><div><span className="eyebrow">Stock management</span><h2 id="delete-stock-title">Delete this stock?</h2><p>Are you sure you want to remove <b>{deleteProduct.name}</b> from your inventory? This action cannot be undone.</p></div><div className="confirm-actions"><button className="secondary-button" onClick={()=>setDeleteProduct(null)}>Cancel</button><button className="danger-button solid" onClick={()=>{setProducts(ps=>ps.filter(p=>p.id!==deleteProduct.id));setDeleteProduct(null);notify('Stock deleted')}}>Delete stock</button></div></section></div>}{toast&&<div className="toast"><Check/>{toast}</div>}
- </div>
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('micro-mec-state')
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved && typeof saved === 'object') {
+        if (Array.isArray(saved.products)) setProducts(saved.products)
+        if (Array.isArray(saved.debts)) setDebts(saved.debts)
+        // if (Array.isArray(saved.receipts)) setReceipts(saved.receipts)
+        // if (saved.settings && typeof saved.settings === 'object') setSettings((current) => ({ ...current, ...saved.settings }))
+        if (Array.isArray(saved.activities)) setActivities(saved.activities)
+      }
+    } catch {
+      localStorage.removeItem('micro-mec-state')
+    } finally {
+      hasLoadedState.current = true
+      setHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hydrated || !hasLoadedState.current) return
+    localStorage.setItem('micro-mec-state', 
+      JSON.stringify({ products, debts, activities }))
+  }, [hydrated, products, debts, activities])
+
+ useEffect(() => {
+  async function loadDashboardData() {
+    try {
+      const [productsRes, debtsRes, receiptsRes, activitiesRes] =
+        await Promise.all([
+          fetch('/api/products'),
+          fetch('/api/debts'),
+          fetch('/api/receipts'),
+          fetch('/api/activities'),
+        ])
+
+      if (
+        !productsRes.ok ||
+        !debtsRes.ok ||
+        !receiptsRes.ok ||
+        !activitiesRes.ok
+      ) {
+        throw new Error('Failed to load dashboard data')
+      }
+
+      const [
+        productsData,
+        debtsData,
+        receiptsData,
+        activitiesData,
+      ] = await Promise.all([
+        productsRes.json(),
+        debtsRes.json(),
+        receiptsRes.json(),
+        activitiesRes.json(),
+      ])
+
+      setProducts(Array.isArray(productsData) ? productsData : [])
+      setDebts(Array.isArray(debtsData) ? debtsData : [])
+      setReceipts(Array.isArray(receiptsData) ? receiptsData : [])
+      setActivities(Array.isArray(activitiesData) ? activitiesData : [])
+
+      if (Array.isArray(activitiesData) && activitiesData.length > 0) {
+        setSelectedInbox(activitiesData[0])
+      }
+    } catch (error) {
+      console.error('Failed to load dashboard data:', error)
+    }
+  }
+
+  loadDashboardData()
+}, [])
+
+useEffect(() => {
+  async function loadSettings() {
+    try {
+      const response = await fetch('/api/settings')
+
+      if (!response.ok) {
+        throw new Error('Failed to load settings')
+      }
+
+      const settingsData = await response.json()
+
+      setSettings((current) => ({
+        ...current,
+        ...settingsData,
+      }))
+    } catch (error) {
+      console.error('Failed to load settings:', error)
+    }
+  }
+
+  loadSettings()
+}, [])
+
+const notify = async (
+  text: string,
+  detail?: string,
+  important = false,
+  extra: Partial<Activity> = {}
+) => {
+  if (settings.notifications === 'Disabled') {
+    return
+  }
+
+  if (
+    settings.notifications === 'Important only' &&
+    !important
+  ) {
+    return
+  }
+
+  setToast(text)
+
+  const activity = {
+    text,
+    detail,
+    time: now(),
+    ...extra,
+  }
+
+  try {
+    const response = await fetch('/api/activities', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(activity),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to save notification')
+    }
+
+    const savedActivity = await response.json()
+
+   setActivities((items) => [
+  savedActivity,
+  ...items,
+])
+  } catch (error) {
+    console.error('Failed to save notification:', error)
+
+   setActivities((items) => [
+  {
+    id: Date.now(),
+    text,
+    detail,
+    time: now(),
+    read: false,
+    ...extra,
+  },
+  ...items,
+])
+  }
+
+  window.setTimeout(() => setToast(''), 2600)
 }
-function TrendingUpIcon(){return <ArrowUpRight/>}
-function Login({onSignIn}:{onSignIn:()=>void}){return <div className="login-screen"><div className="login-card"><div className="brand-mark"><Store/></div><div className="eyebrow">Acme Market workspace</div><h1>Welcome back</h1><p>Sign in to manage your inventory and customer accounts.</p><form onSubmit={e=>{e.preventDefault();onSignIn()}}><label>Email<input type="email" defaultValue="admin@acmemarket.com" required/></label><label>Password<input type="password" defaultValue="password" required/></label><button className="primary-button" type="submit"><LogIn/>Sign in</button></form></div></div>}
-function Overview({outstanding,onGo}:{outstanding:number;onGo:(s:Section)=>void}){return <><div className="welcome-card"><div><span className="eyebrow">Today&apos;s pulse</span><h2>Everything is in view.</h2><p>Track inventory movement, collect balances, and keep the team aligned.</p></div><div className="pulse-orb"><Sparkles/></div></div><div className="stat-grid"><Stat icon={<Package/>} label="Products tracked" value="1,248" change="12.5% this month" positive/><Stat icon={<CreditCard/>} label="Outstanding debt" value={money(outstanding)} change="Across 2 customers"/><Stat icon={<ShoppingCart/>} label="Stock received" value="318" change="This month" positive/><Stat icon={<Users/>} label="Team members" value="6" change="2 active now"/></div><div className="quick-grid"><button onClick={()=>onGo('Debt')}><CreditCard/><b>Review debt</b><span>See balances and payments</span><ArrowUpRight/></button><button onClick={()=>onGo('New Stocks')}><ClipboardList/><b>Recent stock</b><span>Review incoming inventory</span><ArrowUpRight/></button></div></>}
-function Stat({icon,label,value,change,positive}:{icon:React.ReactNode;label:string;value:string;change:string;positive?:boolean}){return <div className="stat-card"><div className="stat-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small className={positive?'positive':''}>{positive&&<ArrowUpRight/>}{change}</small></div>}
-function Toolbar({query,setQuery,statusFilter,setStatusFilter,options}:{query:string;setQuery:(s:string)=>void;statusFilter:string;setStatusFilter:(s:string)=>void;options:string[]}){return <div className="toolbar"><div className="search"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search products, customers..."/></div><div className="filter-select"><SlidersHorizontal/><select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)} aria-label="Filter"><option value="All">All filters</option>{options.filter(x=>x!=='All').map(x=><option key={x}>{x}</option>)}</select></div></div>}
-function ProductTable({products,onNotify,onStatusChange,onEdit,onDelete}:{products:Product[];onNotify:(s:string)=>void;onStatusChange:(id:number,status:string)=>void;onEdit:(id:number,key:'stock'|'price',value:string)=>void;onDelete:(id:number)=>void}){const [openId,setOpenId]=useState<number|null>(null);return <div className="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th>In stock</th><th>Unit price</th><th>Status</th><th/></tr></thead><tbody>{products.map(p=><tr key={p.id}><td><div className="product-name"><div className="product-thumb"><Package/></div><div><b>{p.name}</b><span>{p.sku}</span></div></div></td><td>{p.category}</td><td><input className="table-number" type="number" min="0" value={p.stock} onChange={e=>onEdit(p.id,'stock',e.target.value)} aria-label={`Stock for ${p.name}`}/> units</td><td><input className="table-number price" type="number" min="0" step="0.01" value={p.price} onChange={e=>onEdit(p.id,'price',e.target.value)} aria-label={`Price for ${p.name}`}/></td><td><select className="status-control" value={p.status} onChange={e=>onStatusChange(p.id,e.target.value)} aria-label={`Status for ${p.name}`}><option>In stock</option><option>Low stock</option><option>Out of stock</option><option>Discontinued</option></select></td><td className="row-actions"><button className="more-button" onClick={()=>setOpenId(openId===p.id?null:p.id)} aria-label={`More actions for ${p.name}`} aria-expanded={openId===p.id}><MoreHorizontal/></button>{openId===p.id&&<div className="stock-menu"><button onClick={()=>{onNotify(`${p.name} has ${p.stock} units available`);setOpenId(null)}}>View stock details</button><button onClick={()=>{onNotify(`Editing ${p.name}`);setOpenId(null)}}>Edit product</button><button onClick={()=>{onStatusChange(p.id,p.stock===0?'In stock':'Out of stock');setOpenId(null)}}>Toggle availability</button><button className="menu-danger" onClick={()=>{onDelete(p.id);setOpenId(null)}}>Delete stock</button></div>}</td></tr>)}</tbody></table>{!products.length&&<div className="empty"><Package/><b>No products found</b><span>Try changing your search or filter.</span></div>}</div>}
-function Receipts({receipts,onEdit,onDelete}:{receipts:Receipt[];onEdit:(id:number,key:'name'|'model'|'quantity'|'invoice',value:string)=>void;onDelete:(id:number)=>void}){return <div className="receipt-list">{receipts.map(r=><details className="receipt-row" key={r.id}><summary><div className="receipt-icon"><ArrowDownLeft/></div><div className="receipt-info"><b>{r.name}</b><span>Invoice #{r.invoice} · {daysAgo(r.date)}</span></div><strong>+{r.quantity} items</strong><span className="status-pill success">Completed</span><ChevronDown/></summary><div className="receipt-details"><label>Stock name<input value={r.name} onChange={e=>onEdit(r.id,'name',e.target.value)}/></label><label>Model number<input value={r.model} onChange={e=>onEdit(r.id,'model',e.target.value)}/></label><label>Quantity<input type="number" min="0" value={r.quantity} onChange={e=>onEdit(r.id,'quantity',e.target.value)}/></label><label>Invoice<input value={r.invoice} onChange={e=>onEdit(r.id,'invoice',e.target.value)}/></label><button className="danger-button" onClick={()=>onDelete(r.id)}>Delete invoice</button></div></details>)}</div>}
-function daysAgo(date:string){const parsed=new Date(date);if(Number.isNaN(parsed.getTime()))return 'recently';const days=Math.max(0,Math.floor((Date.now()-parsed.getTime())/86400000));return days===0?'today':`${days} day${days===1?'':'s'} ago`}
-function DebtTable({debts,paid,onOpen}:{debts:Debt[];paid:boolean;onOpen:(d:Debt)=>void}){return <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Invoice</th><th>Amount</th><th>Remaining</th><th>{paid?'Paid at':'Due'}</th></tr></thead><tbody>{debts.map(d=>{const paidAmount=d.payments.reduce((a,p)=>a+p.amount,0);return <tr key={d.id} onClick={()=>onOpen(d)} className="clickable-row"><td><div className="customer"><div className="avatar customer-avatar">{d.customer.slice(0,2).toUpperCase()}</div><b>{d.customer}</b></div></td><td>{d.invoice}</td><td><b>{money(d.amount)}</b></td><td><b>{money(Math.max(0,d.amount-paidAmount))}</b><span className="progress"><i style={{width:`${Math.min(100,paidAmount/d.amount*100)}%`}}/></span></td><td><span className="status-pill success">{paid?d.paidAt:'Open · '+d.due}</span></td></tr>})}</tbody></table>{!debts.length&&<div className="empty"><CircleDollarSign/><b>{paid?'No paid debts':'No outstanding debts'}</b><span>{paid?'Completed payments will appear here.':'All customer balances are clear.'}</span></div>}</div>}
-function DebtDetail({debt,readOnly,onClose,onSave}:{debt:Debt;readOnly:boolean;onClose:()=>void;onSave:(d:Debt,fullyPaid:boolean)=>void}){const [draft,setDraft]=useState<Debt>(JSON.parse(JSON.stringify(debt)));const paidTotal=draft.payments.reduce((a,p)=>a+Math.max(0,Number(p.amount)||0),0);const balance=Math.max(0,(Number(draft.amount)||0)-paidTotal);const updateItem=(i:number,key:'name'|'price',value:string)=>setDraft(d=>{const items=d.items.map((it,n)=>n===i?{...it,[key]:key==='price'?Math.max(0,Number(value)||0):value}:it);return {...d,items,amount:items.reduce((sum,item)=>sum+Math.max(0,Number(item.price)||0),0)}});return <div className="modal-backdrop"><div className="modal wide"><div className="modal-header"><div><div className="eyebrow">Debt detail</div><h2>{draft.customer}</h2><p>{draft.invoice} · Created {draft.createdAt}</p></div><button className="icon-button" onClick={onClose}><X/></button></div><div className="detail-grid"><label>Customer name<input disabled={readOnly} value={draft.customer} onChange={e=>setDraft({...draft,customer:e.target.value})}/></label><label>Original debt amount<input type="number" value={draft.amount} onChange={e=>setDraft({...draft,amount:Number(e.target.value)})}/></label></div><h3>Items bought</h3><div className="editable-list">{draft.items.map((item,i)=><div className="editable-row" key={i}><input value={item.name} onChange={e=>updateItem(i,'name',e.target.value)}/><input type="number" value={item.price} onChange={e=>updateItem(i,'price',e.target.value)}/></div>)}{!readOnly&&<button className="secondary-button" onClick={()=>setDraft(d=>({...d,items:[...d.items,{name:'New item',price:0}]}))}><Plus/>Add item</button>}</div><h3>Part payments</h3><div className="payment-list">{draft.payments.map((p,i)=><div className="editable-row" key={p.id}><input type="number" value={p.amount} onChange={e=>setDraft(d=>({...d,payments:d.payments.map((x,n)=>n===i?{...x,amount:Number(e.target.value)}:x)}))}/><span>{p.date}</span></div>)}{!readOnly&&<button className="secondary-button" onClick={()=>setDraft(d=>({...d,payments:[...d.payments,{id:Date.now(),amount:0,date:now()}]}))}><Plus/>Add payment</button>}</div><div className="balance-card"><span>Remaining balance</span><strong>{money(Math.max(0,balance))}</strong></div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="secondary-button danger-action" onClick={()=>onSave({...draft,payments:[...draft.payments,{id:Date.now(),amount:Math.max(0,balance),date:now()}]},true)}>Mark as Fully Paid</button><button className="primary-button" onClick={()=>onSave(draft,false)}><Check/>Save changes</button></div></div></div>}
-function RecordModal({type,onClose,onSubmit}:{type:'product'|'debt'|'receipt';onClose:()=>void;onSubmit:(e:React.FormEvent<HTMLFormElement>)=>void}){return <div className="modal-backdrop" onMouseDown={e=>e.currentTarget===e.target&&onClose()}><div className="modal"><div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type==='product'?'Add new product':type==='debt'?'Add customer debt':'Record stock receipt'}</h2></div><button className="icon-button" onClick={onClose}><X/></button></div><form onSubmit={onSubmit}><label>{type==='debt'?'Customer name':'Name or reference'}<input name={type==='debt'?'customer':'name'} required placeholder={type==='debt'?'e.g. Harbor Market':'e.g. Premium Rice 25kg'}/></label>{type==='product'&&<div className="form-row"><label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label><label>Price<input name="price" type="number" min="0" step="0.01" required/></label><label>Quantity<input name="stock" type="number" min="0" required/></label></div>}{type==='debt'&&<><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg"/></label><label>Amount<input name="amount" type="number" min="1" required/></label></>}{type==='receipt'&&<><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501"/></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required/></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021"/></label></div></>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check/>Save record</button></div></form></div></div>}
-function SettingsPage({settings,setSettings,onSave}:{settings:{workspace:string;currency:string;notifications:string;lowStockThreshold:string;dateFormat:string};setSettings:React.Dispatch<React.SetStateAction<typeof settings>>;onSave:()=>void}){return <div className="settings-page"><div className="settings-card"><Settings/><div><h2>Workspace settings</h2><p>Control preferences, alerts, and defaults for your team.</p></div></div><label>Workspace name<input value={settings.workspace} onChange={e=>setSettings(s=>({...s,workspace:e.target.value}))}/></label><label>Default currency<select value={settings.currency} onChange={e=>setSettings(s=>({...s,currency:e.target.value}))}><option value="NGN">₦ — Nigerian Naira</option><option value="USD">$ — US Dollar</option><option value="EUR">€ — Euro</option><option value="GBP">£ — Pound Sterling</option></select></label><label>Notifications<select value={settings.notifications} onChange={e=>setSettings(s=>({...s,notifications:e.target.value}))}><option>All activity</option><option>Important only</option><option>Disabled</option></select></label><label>Low stock alert threshold<input type="number" value={settings.lowStockThreshold} onChange={e=>setSettings(s=>({...s,lowStockThreshold:e.target.value}))}/></label><label>Date format<select value={settings.dateFormat} onChange={e=>setSettings(s=>({...s,dateFormat:e.target.value}))}><option>MMM D, YYYY</option><option>DD/MM/YYYY</option><option>YYYY-MM-DD</option></select></label><button className="primary-button" onClick={onSave}><Check/>Save changes</button></div>}
-function TeamPage(){return <div className="team-grid">{[['Alex Morgan','Administrator','AM'],['Jordan Lee','Sales representative','JL'],['Priya Shah','Sales representative','PS'],['Sam Wilson','Inventory manager','SW']].map(([name,role,initials])=><div className="team-card" key={name}><div className="avatar team-avatar">{initials}</div><div><b>{name}</b><span>{role}</span></div><span className="status-pill success">Active</span></div>)}</div>}
+
+
+
+  const outstanding = debts
+    .filter((d) => !d.paidAt)
+    .reduce((sum, d) => sum + Math.max(0, d.amount - d.payments.reduce((a, p) => a + p.amount, 0)), 0)
+
+  const filteredProducts = useMemo(
+    () => products.filter(
+      (p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(query.toLowerCase()) && (statusFilter === 'All' || p.status === statusFilter),
+    ),
+    [products, query, statusFilter],
+  )
+
+  const visibleDebts = useMemo(
+    () => debts.filter((d) => (section === 'Paid' ? !!d.paidAt : !d.paidAt)).filter((d) => `${d.customer} ${d.invoice}`.toLowerCase().includes(query.toLowerCase())),
+    [debts, query, section],
+  )
+
+  const go = (s: Section) => {
+    setSection(s)
+    setQuery('')
+    setStatusFilter('All')
+    setNotifications(false)
+    setMenuOpen(false)
+  }
+
+  const openInbox = () => {
+    setSection('Inbox')
+    setNotifications(false)
+    setMenuOpen(false)
+    if (!selectedInbox && activities[0]) setSelectedInbox(activities[0])
+  }
+
+  const viewNotification = async (activity: Activity) => {
+  setActivities((items) =>
+    items.map((item) =>
+      item.id === activity.id
+        ? { ...item, read: true }
+        : item
+    )
+  )
+
+  setSelectedInbox({ ...activity, read: true })
+  setSection('Inbox')
+  setNotifications(false)
+
+  try {
+    const response = await fetch(`/api/activities/${activity.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ read: true }),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to mark notification as read')
+    }
+  } catch (error) {
+    console.error('Failed to mark notification as read:', error)
+  }
+}
+  const signOut = () => {
+    setSignedIn(false)
+    setMenuOpen(false)
+    setToast('Signed out successfully')
+  }
+
+  // Keep the sidebar visible on large screens and only allow mobile open/close toggling.
+  useEffect(() => {
+    function update() {
+      setSidebar(window.innerWidth > 768)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
+
+  if (!signedIn) return <LoginScreen onSignIn={() => { setSignedIn(true); setToast('Welcome back') }} />
+
+
+   const updateProductOnServer = async (
+  id: number,
+  updates: Partial<Product>
+) => {
+  const response = await fetch(`/api/products/${id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(updates),
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to update product')
+  }
+
+  return response.json()
+}
+
+const deleteProductOnServer = async (id: number) => {
+  const response = await fetch(`/api/products/${id}`, {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to delete product')
+  }
+
+  return response.json()
+}
+
+const formatCurrency = (amount: number) => {
+  const currencySymbols: Record<string, string> = {
+    NGN: '₦',
+    USD: '$',
+    EUR: '€',
+    GBP: '£',
+  }
+
+  const symbol = currencySymbols[settings.currency] || '₦'
+
+  return `${symbol}${amount.toLocaleString()}`
+}
+
+  const addProduct = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault()
+
+  const f = new FormData(e.currentTarget)
+  const stock = Number(f.get('stock'))
+  const model = String(f.get('model') || '').trim()
+
+  const newProduct = {
+    name: String(f.get('name')),
+    model: model || `MEC-${String(Date.now()).slice(-5).toUpperCase()}`,
+    sku: model || `NEW-${String(Date.now()).slice(-4)}`,
+    category: String(f.get('category')),
+    stock,
+    price: Number(f.get('price')),
+    status: stock === 0 ? 'Out of stock' : stock < 30 ? 'Low stock' : 'In stock',
+  }
+
+  try {
+    const response = await fetch('/api/products', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(newProduct),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to add product')
+    }
+
+    const savedProduct = await response.json()
+
+   setProducts((products) => [savedProduct, ...products])
+    setModal(null)
+
+    notify(
+  `Product added to stock: ${savedProduct.name}`,
+  `New product added. Model: ${savedProduct.model}. SKU: ${savedProduct.sku}. Category: ${savedProduct.category}. Stock: ${savedProduct.stock} units. Price: ${money(savedProduct.price, settings.currency)}.`,
+  true,
+  {
+    type: 'product',
+    product: savedProduct.name,
+    quantity: savedProduct.stock,
+    currency: settings.currency,
+  }
+    )
+  } 
+  
+  catch (error) {
+    console.error(error)
+    setToast('Failed to add product')
+  }
+}
+
+
+
+
+  const addDebt = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault()
+
+  const f = new FormData(e.currentTarget)
+
+  const customer = String(f.get('customer') || '').trim()
+  const item = String(f.get('item') || '').trim()
+  const amount = Number(f.get('amount'))
+
+  const newDebt = {
+    customer,
+    invoice: `INV-${String(Date.now()).slice(-4)}`,
+    items: [
+      {
+        name: item,
+        price: amount,
+      },
+    ],
+    amount,
+    payments: [],
+    due: 'Not set',
+    createdAt: now(),
+  }
+
+  try {
+    const response = await fetch('/api/debts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(newDebt),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to add debt')
+    }
+
+    const savedDebt = await response.json()
+
+    setDebts((debts) => [savedDebt, ...debts])
+
+    setModal(null)
+
+  notify(
+  `Debt added for ${savedDebt.customer}`,
+  `New debt created. Invoice: ${savedDebt.invoice}. Total amount: ${money(savedDebt.amount, settings.currency)}. Item: ${savedDebt.items?.[0]?.name || 'No item details'}.`,
+  true,
+  {
+    type: 'debt',
+    amount: savedDebt.amount,
+    currency: settings.currency,
+    customer: savedDebt.customer,
+    invoice: savedDebt.invoice,
+    remaining: savedDebt.amount,
+  }
+     ), 
+    undefined, true
+  } catch (error) {
+    console.error('Failed to add debt:', error)
+    setToast('Failed to add debt')
+  }
+}
+
+ const addReceipt = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault()
+
+  const f = new FormData(e.currentTarget)
+
+  const newReceipt = {
+    name: String(f.get('name') || '').trim(),
+    model: String(f.get('model') || '').trim(),
+    quantity: Number(f.get('quantity')) || 0,
+    invoice: String(f.get('invoice') || '').trim(),
+    date: now(),
+  }
+
+  const deleteReceiptOnServer = async (id: number) => {
+  const response = await fetch(`/api/receipts/${id}`, {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to delete stock')
+  }
+
+  return response.json()
+}
+
+  try {
+    const response = await fetch('/api/receipts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(newReceipt),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to record stock receipt')
+    }
+
+    const savedReceipt = await response.json()
+
+    setReceipts((receipts) => [savedReceipt, ...receipts])
+
+    setModal(null)
+
+    notify(
+  `New stock recorded: ${savedReceipt.name} (${savedReceipt.quantity} units)`,
+  `Incoming stock recorded. Model: ${savedReceipt.model}. Invoice: ${savedReceipt.invoice}. Quantity: ${savedReceipt.quantity} units. Received: ${savedReceipt.date}.`,
+  true,
+  {
+    type: 'stock',
+    product: savedReceipt.name,
+    quantity: savedReceipt.quantity,
+  }
+)
+  } catch (error) {
+    console.error('Failed to record stock receipt:', error)
+    setToast('Failed to record stock receipt')
+  }
+}
+
+  return (
+    <div className={dark ? 'app-shell dark' : 'app-shell'}>
+      <Sidebar section={section} sidebar={sidebar} settings={settings} onGo={go} onClose={() => setSidebar(false)} />
+
+      <main className="main-content">
+        <Topbar
+          section={section}
+          dark={dark}
+          notifications={notifications}
+          menuOpen={menuOpen}
+          activities={activities}
+          onToggleTheme={() => setDark(!dark)}
+          onToggleNotifications={() => setNotifications(!notifications)}
+          onOpenInbox={openInbox}
+          onOpenSection={go}
+          onToggleMenu={() => setMenuOpen(!menuOpen)}
+          onSignOut={signOut}
+          onViewNotification={viewNotification}
+        />
+
+        <div className="page-wrap">
+          <div className="page-heading">
+            <div>
+              <div className="eyebrow">{section === 'Overview' ? 'Good morning, Alex' : 'Workspace'}</div>
+              <h1>{section}</h1>
+              <p>
+                {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : 'Keep an eye on your products and stock levels.'}
+              </p>
+            </div>
+            {!['Overview', 'Paid', 'Settings', 'Team members'].includes(section) && (
+              <button className="primary-button" onClick={() => setModal(section === 'Debt' ? 'debt' : section === 'New Stocks' ? 'receipt' : 'product')}>
+                <Plus />
+                {section === 'Debt' ? 'Add debt' : section === 'New Stocks' ? 'Record stock' : 'Add product'}
+              </button>
+            )}
+          </div>
+
+          {section === 'Overview' && <OverviewSection outstanding={outstanding} onGo={go} />}
+
+          {section === 'Stocks' && (
+            <>
+              <div className="stat-grid">
+                <Stat icon={<Package />} label="Total products" value={products.length.toLocaleString()} change="+12.5%" positive />
+             <Stat
+               icon={<TrendingUpIcon />}
+               label="Total stock value"
+               value={money(
+               products.reduce((a, p) => a + p.stock * p.price, 0),
+               settings.currency
+                )}
+               change="+8.2%"
+               positive
+                />               
+          <Stat icon={<CircleAlert />} label="Low stock items" value={products.filter((p) => p.status === 'Low stock').length.toString()} change="Needs attention" />
+                <Stat icon={<WalletCards />} label="Out of stock" value={products.filter((p) => p.stock === 0).length.toString()} change="-2 this week" positive />
+              </div>
+              <section className="panel mb-20 ">
+                <Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All', 'In stock', 'Low stock', 'Out of stock']} />
+                <ProductTable
+                  products={filteredProducts}
+                  onNotify={notify}
+
+             onStatusChange={async (id, status) => {
+              try {
+                const updatedProduct = await updateProductOnServer(id, { status })
+
+             setProducts((items) =>
+               items.map((p) => (p.id === id ? updatedProduct : p))
+             )
+
+              notify(
+             `${updatedProduct.name} status updated`,
+             `Product status changed to ${updatedProduct.status}. Model: ${updatedProduct.model}. SKU: ${updatedProduct.sku}. Current stock: ${updatedProduct.stock} units.`,
+             true,
+               {
+               type: 'product',
+               product: updatedProduct.name,
+               quantity: updatedProduct.stock,
+               }
+                )
+               } catch (error) {
+                console.error(error)
+                 setToast('Failed to update product')
+               }
+               }}                  
+                  onEdit={async (id, key, value) => {
+  const currentProduct = products.find((p) => p.id === id)
+
+  if (!currentProduct) {
+    setToast('Product not found')
+    return
+  }
+
+  const updates = {
+    [key]: key === 'stock' || key === 'price' ? Number(value) : value,
+  }
+
+  try {
+    const updatedProduct = await updateProductOnServer(id, updates)
+
+    setProducts((items) =>
+      items.map((p) => (p.id === id ? updatedProduct : p))
+    )
+
+    if (key === 'stock') {
+      notify(
+        `${updatedProduct.name} stock updated`,
+        `Stock changed from ${currentProduct.stock} units to ${updatedProduct.stock} units. Model: ${updatedProduct.model}.`,
+        true,
+        {
+          type: 'stock',
+          product: updatedProduct.name,
+          quantity: updatedProduct.stock,
+        }
+      )
+    }
+
+    if (key === 'price') {
+      notify(
+        `${updatedProduct.name} price updated`,
+        `Price changed from ${money(currentProduct.price, settings.currency)} to ${money(updatedProduct.price, settings.currency)}. Model: ${updatedProduct.model}.`,
+        true,
+        {
+          type: 'product',
+          product: updatedProduct.name,
+          currency: settings.currency,
+        }
+      )
+    }
+  } catch (error) {
+    console.error(error)
+    setToast('Failed to update product')
+  }
+}}
+                  onDelete={(id) => setDeleteProduct(products.find((p) => p.id === id) ?? null)}
+                />
+              </section>
+            </>
+          )}
+
+          {section === 'New Stocks' && (
+  <section className="panel mb-20">
+    <Toolbar
+      query={query}
+      setQuery={setQuery}
+      statusFilter={statusFilter}
+      setStatusFilter={setStatusFilter}
+      options={['All', 'Completed']}
+    />
+
+   <Receipts
+  receipts={receipts}
+  onEdit={async (id, updates) => {
+    try {
+      const response = await fetch(`/api/receipts/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updates),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to update stock')
+      }
+
+      const updatedReceipt = await response.json()
+
+      setReceipts((items) =>
+        items.map((item) =>
+          item.id === updatedReceipt.id
+            ? updatedReceipt
+            : item
+        )
+      )
+    } catch (error) {
+      console.error('Failed to update stock:', error)
+      setToast('Failed to update stock')
+      throw error
+    }
+  }}
+  onDelete={(id) => {
+    const stock = receipts.find((r) => r.id === id)
+
+    if (stock) {
+      setDeleteReceipt(stock)
+    }
+  }}
+/>
+  </section>
+)}
+
+          {(section === 'Debt' || section === 'Paid') && (
+            <>
+              <div className="debt-total">
+                <div>
+                  <span>{section === 'Paid' ? 'Total paid history' : 'Total Outstanding Debt'}</span>
+                  <strong>
+                  {section === 'Paid'
+                    ? money(
+                    debts
+                     .filter((d) => d.paidAt)
+                     .reduce((a, d) => a + d.amount, 0),
+                  settings.currency
+                     )
+                  : money(outstanding, settings.currency)}
+                  </strong>               
+             </div>
+                <CircleDollarSign />
+              </div>
+              <section className="panel mb-20">
+                <Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All']} />
+                <DebtTable debts={visibleDebts} paid={section === 'Paid'} onOpen={(d) => { setSelectedDebt(d); setModal('detail')  }} currency={settings.currency} />
+              </section>
+            </>
+          )}
+
+          {section === 'Inbox' && (
+            <Inbox
+              activities={activities}
+              selectedInbox={selectedInbox}
+              setSelectedInbox={(a) => setSelectedInbox(a)}
+              setActivities={setActivities}
+            />
+          )}
+
+   {section === 'Settings' && (
+  <SettingsPage
+    settings={settings}
+    setSettings={setSettings}
+    onSave={async () => {
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(settings),
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to save settings')
+        }
+
+        const savedSettings = await response.json()
+
+        setSettings((current) => ({
+          ...current,
+          ...savedSettings,
+        }))
+
+        notify('Workspace settings saved')
+      } catch (error) {
+        console.error('Failed to save settings:', error)
+        setToast('Failed to save settings')
+      }
+    }}
+  />
+)}          
+      
+      {section === 'Team members' && <TeamPage />}
+        </div>
+
+        <MobileNav section={section} go={go} />
+
+        {modal && modal !== 'detail' && (
+          <RecordModal
+            type={modal}
+            onClose={() => setModal(null)}
+           onSubmit={
+              modal === 'product'
+              ? addProduct
+              : modal === 'debt'
+               ? addDebt
+          : addReceipt
+           }
+          />
+        )}
+
+        {modal === 'detail' && selectedDebt && (
+          <DebtDetail
+            debt={selectedDebt}
+            readOnly={section === 'Paid'}
+            onClose={() => { setModal(null); setSelectedDebt(null) }}
+            onSave={async (d, fullyPaid) => {
+  const updatedDebt = {
+    ...d,
+    paidAt: fullyPaid ? now() : d.paidAt,
+  }
+
+  try {
+    const response = await fetch(`/api/debts/${d.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(updatedDebt),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to update debt')
+    }
+
+    const savedDebt = await response.json()
+
+    setDebts((items) =>
+      items.map((item) =>
+        item.id === savedDebt.id ? savedDebt : item
+      )
+    )
+
+    setModal(null)
+    setSelectedDebt(null)
+
+    const oldPaidAmount = (selectedDebt?.payments ?? []).reduce(
+      (total, payment) => total + payment.amount,
+      0
+    )
+
+    const newPaidAmount = (savedDebt.payments ?? []).reduce(
+  (total: number, payment: Payment) =>
+    total + Number(payment.amount),
+  0
+)
+
+    const paymentAmount = Math.max(
+      0,
+      newPaidAmount - oldPaidAmount
+    )
+
+    const remaining = Math.max(
+      0,
+      savedDebt.amount - newPaidAmount
+    )
+
+    notify(
+      fullyPaid
+        ? `Debt for ${savedDebt.customer} marked fully paid`
+        : `Payment received from ${savedDebt.customer}`,
+      fullyPaid
+        ? `Debt fully paid. Total paid: ${money(newPaidAmount, settings.currency)}`
+        : `Payment of ${money(paymentAmount, settings.currency)} received. Remaining balance: ${money(remaining, settings.currency)}`,
+      true,
+      {
+        type: 'payment',
+        amount: paymentAmount,
+        currency: settings.currency,
+        customer: savedDebt.customer,
+        invoice: savedDebt.invoice,
+        remaining,
+      }
+    )
+  } catch (error) {
+    console.error('Failed to update debt:', error)
+    setToast('Failed to update debt')
+  }
+}}
+          />
+        )}
+
+        {deleteProduct && (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="delete-stock-title">
+              <div className="confirm-icon"><CircleAlert /></div>
+              <div>
+                <span className="eyebrow">Stock management</span>
+                <h2 id="delete-stock-title">Delete this stock?</h2>
+                <p>Are you sure you want to remove <b>{deleteProduct.name}</b> from your inventory? This action cannot be undone.</p>
+              </div>
+              <div className="confirm-actions">
+                <button className="secondary-button" onClick={() => setDeleteProduct(null)}>Cancel</button>
+                <button className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-700" 
+                onClick={async () => {
+                  if (deleteProduct) {
+              try {
+                await deleteProductOnServer(deleteProduct.id)
+
+              setProducts((items) =>
+              items.filter((p) => p.id !== deleteProduct.id)
+              )
+               notify(
+                `Product deleted: ${deleteProduct.name}`,
+                `Product was removed from inventory. Model: ${deleteProduct.model}. SKU: ${deleteProduct.sku}. Category: ${deleteProduct.category}. Last recorded stock: ${deleteProduct.stock} units.`,
+                true,
+                   {
+                type: 'product',
+            product: deleteProduct.name,
+            quantity: deleteProduct.stock,
+  }
+)
+              setDeleteProduct(null)
+               } catch (error) {
+               console.error(error)
+             setToast('Failed to delete product')
+             }
+            }
+                   setDeleteProduct(null); notify('Stock deleted') }}>Delete stock</button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {deleteReceipt && (
+  <div
+    className="modal-backdrop"
+    onMouseDown={(e) => {
+      if (e.currentTarget === e.target) {
+        setDeleteReceipt(null)
+      }
+    }}
+  >
+    <div className="modal">
+      <div className="modal-header">
+        <div>
+          <div className="eyebrow">Delete stock</div>
+
+          <h2>Delete stock?</h2>
+
+          <p className="mt-2 text-sm text-slate-500">
+            Are you sure you want to delete{' '}
+            <strong>{deleteReceipt.name}</strong>?
+            This action cannot be undone.
+          </p>
+        </div>
+
+        <button
+          className="icon-button"
+          onClick={() => setDeleteReceipt(null)}
+        >
+          <X />
+        </button>
+      </div>
+
+      <div className="modal-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => setDeleteReceipt(null)}
+        >
+          Cancel
+        </button>
+
+       <button
+  type="button"
+  className="primary-button"
+  onClick={async () => {
+    if (!deleteReceipt) return
+
+    try {
+      const receiptId = deleteReceipt.id
+
+      const response = await fetch(
+        `/api/receipts/${receiptId}`,
+        {
+          method: 'DELETE',
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error('Failed to delete stock')
+      }
+
+      setReceipts((items) =>
+        items.filter((item) => item.id !== receiptId)
+      )
+
+      setDeleteReceipt(null)
+    } catch (error) {
+      console.error('Failed to delete stock:', error)
+      setToast('Failed to delete stock')
+    }
+  }}
+      >
+  Delete stock
+      </button>
+      </div>
+    </div>
+  </div>
+)}
+
+        {toast && <div className="toast"><Check />{toast}</div>}
+      </main>
+    </div>
+  )
+}
+
+function TrendingUpIcon() { return <ArrowUpRight /> }
+
+function Toolbar({ query, setQuery, statusFilter, setStatusFilter, options }: { query: string; setQuery: (s: string) => void; statusFilter: string; setStatusFilter: (s: string) => void; options: string[] }) {
+  return <div className="toolbar"><div className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search products, customers..." /></div><div className="filter-select"><SlidersHorizontal /><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter"><option value="All">All filters</option>{options.filter((x) => x !== 'All').map((x) => <option key={x}>{x}</option>)}</select></div></div>
+}
+
+function ProductTable({ products, onNotify, onStatusChange, onEdit, onDelete }: { products: Product[]; onNotify: (s: string) => void; onStatusChange: (id: number, status: string) => void; onEdit: (id: number, key: 'name' | 'model' | 'stock' | 'price', value: string) => void; onDelete: (id: number) => void }) {
+  const [openId, setOpenId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
+
+  return <div className="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th>In stock</th><th>Unit price</th><th>Status</th><th /></tr></thead><tbody>{products.map((p) => {
+    const isEditing = editingId === p.id
+    return <tr key={p.id}><td><div className="product-name">
+      <div className="product-thumb"><Package /></div>{isEditing ? <div className="flex w-full flex-col gap-2">
+      <input className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900
+       placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-white" 
+       value={p.name ?? ''} onChange={(e) => onEdit(p.id, 'name', e.target.value)} />
+       <input className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900
+        placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-white" 
+        value={p.model ?? ''} 
+        onChange={(e) => onEdit(p.id, 'model', e.target.value)} /></div> : <div><b>{p.name}</b><span>{p.model || p.sku}</span></div>}</div>
+        </td><td>{p.category}</td><td>
+        <input className="table-number" type="number" min="0" value={p.stock} 
+        onChange={(e) => onEdit(p.id, 'stock', e.target.value)} aria-label={`Stock for ${p.name}`} /> units</td><td>
+          <input className="table-number price" type="number" min="0" step="0.01" value={p.price} 
+          onChange={(e) => onEdit(p.id, 'price', e.target.value)} aria-label={`Price for ${p.name}`} /></td><td>
+            <select className="status-control" value={p.status} onChange={(e) => onStatusChange(p.id, e.target.value)} 
+            aria-label={`Status for ${p.name}`}><option>In stock</option><option>Low stock</option>
+            <option>Out of stock</option><option>Discontinued</option></select></td><td className="row-actions">
+            <button className="more-button" onClick={() => setOpenId(openId === p.id ? null : p.id)} 
+            aria-label={`More actions for ${p.name}`} aria-expanded={openId === p.id}><MoreHorizontal /></button>{openId === p.id && <div className="stock-menu"><button onClick={() => { onNotify(`${p.name} has ${p.stock} units available`); setOpenId(null) }}>View stock details</button><button onClick={() => { setEditingId(p.id); setOpenId(null) }}>Edit product</button><button onClick={() => { onStatusChange(p.id, p.stock === 0 ? 'In stock' : 'Out of stock'); setOpenId(null) }}>Toggle availability</button><button className="w-full rounded-md px-3 py-2 text-left text-slate-600 transition hover:bg-slate-100" onClick={() => { onDelete(p.id); setOpenId(null) }}>Delete stock</button>{isEditing && <button className="mt-2 w-full rounded-md bg-slate-900 px-3 py-2 text-left text-white transition hover:bg-slate-700" onClick={() => { setEditingId(null); setOpenId(null) }}>Save changes</button>}</div>}</td></tr>
+  })}</tbody></table>{!products.length && <div className="empty"><Package /><b>No products found</b><span>Adjust your search or add a new item.</span></div>}</div>
+}
+
+function Receipts({
+  receipts,
+  onEdit,
+  onDelete,
+}: {
+  receipts: Receipt[]
+  onEdit: (
+    id: number,
+    updates: Partial<Pick<Receipt, 'name' | 'model' | 'quantity' | 'invoice'>>
+  ) => Promise<void>
+  onDelete: (id: number) => void
+}) {
+  const [editing, setEditing] = useState<Record<number, Receipt>>({})
+  const [saving, setSaving] = useState<number | null>(null)
+
+  const startEditing = (receipt: Receipt) => {
+    setEditing((current) => ({
+      ...current,
+      [receipt.id]: { ...receipt },
+    }))
+  }
+
+  const updateEditing = (
+    id: number,
+    key: 'name' | 'model' | 'quantity' | 'invoice',
+    value: string
+  ) => {
+    setEditing((current) => ({
+      ...current,
+      [id]: {
+        ...current[id],
+        [key]:
+          key === 'quantity'
+            ? Number(value) || 0
+            : value,
+      },
+    }))
+  }
+
+  const saveEditing = async (id: number) => {
+    const draft = editing[id]
+
+    if (!draft) return
+
+    try {
+      setSaving(id)
+
+      await onEdit(id, {
+        name: draft.name,
+        model: draft.model,
+        quantity: draft.quantity,
+        invoice: draft.invoice,
+      })
+
+      setEditing((current) => {
+        const next = { ...current }
+        delete next[id]
+        return next
+      })
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div className="receipt-list">
+      {receipts.map((r) => {
+        const draft = editing[r.id]
+        const current = draft ?? r
+
+        return (
+          <details className="receipt-row" key={r.id}>
+            <summary>
+              <div className="receipt-icon">
+                <ArrowDownLeft />
+              </div>
+
+              <div className="receipt-info">
+                <b>{r.name}</b>
+                <span>
+                  Invoice #{r.invoice} · {daysAgo(r.date)}
+                </span>
+              </div>
+
+              <strong>+{r.quantity} items</strong>
+
+              <span className="status-pill success">
+                Completed
+              </span>
+
+              <ChevronDown />
+            </summary>
+
+            <div className="receipt-details">
+              <label>
+                Stock name
+                <input
+                  value={current.name}
+                  onFocus={() => startEditing(r)}
+                  onChange={(e) =>
+                    updateEditing(
+                      r.id,
+                      'name',
+                      e.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                Model number
+                <input
+                  value={current.model}
+                  onFocus={() => startEditing(r)}
+                  onChange={(e) =>
+                    updateEditing(
+                      r.id,
+                      'model',
+                      e.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                Quantity
+                <input
+                  type="number"
+                  min="0"
+                  value={current.quantity}
+                  onFocus={() => startEditing(r)}
+                  onChange={(e) =>
+                    updateEditing(
+                      r.id,
+                      'quantity',
+                      e.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                Invoice
+                <input
+                  value={current.invoice}
+                  onFocus={() => startEditing(r)}
+                  onChange={(e) =>
+                    updateEditing(
+                      r.id,
+                      'invoice',
+                      e.target.value
+                    )
+                  }
+                />
+              </label>
+
+              <div className="flex gap-2">
+                {draft && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={saving === r.id}
+                    onClick={() => saveEditing(r.id)}
+                  >
+                    {saving === r.id
+                      ? 'Saving...'
+                      : 'Save changes'}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-200"
+                  onClick={() => onDelete(r.id)}
+                >
+                  Delete stock
+                </button>
+              </div>
+            </div>
+          </details>
+        )
+      })}
+    </div>
+  )
+}
+
+function DebtTable({ debts, paid, onOpen, currency }: { debts: Debt[]; paid: boolean; onOpen: (d: Debt) => void; currency: string }) {
+  return <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Invoice</th><th>Amount</th><th>Remaining</th>
+  <th>{paid ? 'Paid at' : 'Due'}</th></tr></thead><tbody>{debts.map((d) => {
+    const paidAmount = d.payments.reduce((a, p) => a + p.amount, 0)
+    return <tr key={d.id} onClick={() => onOpen(d)} className="clickable-row"><td><div className="customer">
+      <div className="avatar customer-avatar">{d.customer.slice(0, 2).toUpperCase()}</div><b>{d.customer}</b></div></td>
+      <td>{d.invoice}</td><td><b>{money(d.amount, currency )}</b></td>
+      <td><b>{money(Math.max(0, d.amount - paidAmount), currency )}</b>
+      <span className="progress"><i style={{ width: `${Math.min(100, (paidAmount / d.amount) * 100)}%` }} /></span></td>
+      <td><span className="status-pill success">{paid ? d.paidAt : 'Open · ' + d.due}</span></td></tr>
+  })}</tbody></table>{!debts.length && <div className="empty"><CircleDollarSign />
+  <b>{paid ? 'No paid debts' : 'No outstanding debts'}</b>
+  <span>{paid ? 'Completed payments will appear here.' : 'All customer balances are clear.'}</span></div>}</div>
+}
+
+function DebtDetail({ debt, readOnly, onClose, onSave }: { debt: Debt; readOnly: boolean; onClose: () => void; onSave: (d: Debt, fullyPaid: boolean) => void }) {
+  const [draft, setDraft] = useState<Debt>(JSON.parse(JSON.stringify(debt)))
+  const paidTotal = draft.payments.reduce((a, p) => a + Math.max(0, Number(p.amount) || 0), 0)
+  const balance = Math.max(0, (Number(draft.amount) || 0) - paidTotal)
+  const updateItem = (i: number, key: 'name' | 'price', value: string) => setDraft((d) => {
+    const items = d.items.map((it, n) => n === i ? { ...it, [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value } : it)
+    return { ...d, items, amount: items.reduce((sum, item) => sum + Math.max(0, Number(item.price) || 0), 0) }
+  })
+
+  return <div className="modal-backdrop"><div className="modal wide"><div className="modal-header"><div><div className="eyebrow">Debt detail</div><h2>{draft.customer}</h2><p>{draft.invoice} · Created {draft.createdAt}</p></div><button className="icon-button" onClick={onClose}><X /></button></div><div className="detail-grid"><label>Customer name<input disabled={readOnly} value={draft.customer} onChange={(e) => setDraft({ ...draft, customer: e.target.value })} /></label>
+  <label>Original debt amount
+    <input
+  type="number"
+  disabled={readOnly}
+  value={draft.amount}
+  onChange={(e) =>
+    setDraft({ ...draft, amount: Number(e.target.value) })
+  }
+   />    
+   </label></div>
+  <h3>Items bought</h3><div className="editable-list">{draft.items.map((item, i) => <div className="editable-row" key={i}>
+    <input
+  disabled={readOnly}
+  value={item.name}
+  onChange={(e) => updateItem(i, 'name', e.target.value)}
+  />
+
+   <input
+  type="number"
+  disabled={readOnly}
+  value={item.price}
+  onChange={(e) => updateItem(i, 'price', e.target.value)}
+  />
+    </div>)}{!readOnly && <button className="secondary-button" onClick={() => setDraft((d) => ({ ...d, items: [...d.items, { name: 'New item', price: 0 }] }))}><Plus />Add item</button>}</div><h3>Part payments</h3><div className="payment-list">{draft.payments.map((p, i) => <div className="editable-row" key={p.id}>
+  <input
+  type="number"
+  disabled={readOnly}
+  value={p.amount}
+  onChange={(e) =>
+    setDraft((d) => ({
+      ...d,
+      payments: d.payments.map((x, n) =>
+        n === i ? { ...x, amount: Number(e.target.value) } : x
+      )
+    }))
+  }
+   />    
+<span>{p.date}</span></div>)}{!readOnly && <button className="secondary-button" onClick={() => setDraft((d) => ({ ...d, payments: [...d.payments, { id: Date.now(), amount: 0, date: now() }] }))}><Plus />Add payment</button>}</div>
+<div className="summary-row">
+  <div>
+    <span>{readOnly ? 'Paid in full' : 'Balance'}</span>
+    <strong>
+      {readOnly ? money(draft.amount) : money(balance)}
+    </strong>
+  </div>
+
+  {!readOnly && (
+    <button
+      className="primary-button"
+      onClick={() => onSave(draft, balance <= 0)}
+    >
+      {balance <= 0 ? 'Mark as paid' : 'Save changes'}
+    </button>
+  )}
+</div>
+</div>
+</div>
+}
+
+function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
+  return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}><div className="modal"><div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'debt' ? 'Add customer debt' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div><form onSubmit={onSubmit}><label>{type === 'debt' ? 'Customer name' : 'Name or reference'}<input name={type === 'debt' ? 'customer' : 'name'} required placeholder={type === 'debt' ? 'e.g. Harbor Market' : 'e.g. Premium Rice 25kg'} /></label>{type === 'product' && <div className="form-row"><label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label><label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label><label>Price<input name="price" type="number" min="0" step="0.01" required /></label><label>Quantity<input name="stock" type="number" min="0" required /></label></div>}{type === 'debt' && <><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg" /></label><label>Amount<input name="amount" type="number" min="1" required /></label></>}{type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div></form></div></div>
+}
+
+function SettingsPage({ settings, setSettings, onSave }: { settings: { workspace: string; currency: string; notifications: string; lowStockThreshold: string; dateFormat: string }; setSettings: React.Dispatch<React.SetStateAction<typeof settings>>; onSave: () => void }) {
+  return <div className="settings-page mb-20">
+    <div className="settings-card"><Settings /><div><h2>Workspace settings</h2><p>Control preferences, alerts, and defaults for your team.</p></div></div><label>Workspace name<input value={settings.workspace} onChange={(e) => setSettings((s) => ({ ...s, workspace: e.target.value }))} /></label><label>Default currency<select value={settings.currency} onChange={(e) => setSettings((s) => ({ ...s, currency: e.target.value }))}><option value="NGN">₦ — Nigerian Naira</option><option value="USD">$ — US Dollar</option><option value="EUR">€ — Euro</option><option value="GBP">£ — Pound Sterling</option></select></label><label>Notifications<select value={settings.notifications} onChange={(e) => setSettings((s) => ({ ...s, notifications: e.target.value }))}><option>All activity</option><option>Important only</option><option>Disabled</option></select></label><label>Low stock alert threshold<input type="number" value={settings.lowStockThreshold} onChange={(e) => setSettings((s) => ({ ...s, lowStockThreshold: e.target.value }))} /></label><label>Date format<select value={settings.dateFormat} onChange={(e) => setSettings((s) => ({ ...s, dateFormat: e.target.value }))}><option>MMM D, YYYY</option><option>DD/MM/YYYY</option><option>YYYY-MM-DD</option></select></label><button className="primary-button" onClick={onSave}><Check/>Save changes</button></div>
+}
+
+function TeamPage() {
+  return <div className="team-grid mb-20">{[['Alex Morgan', 'Administrator', 'AM'], ['Jordan Lee', 'Sales representative', 'JL'], ['Priya Shah', 'Sales representative', 'PS'], ['Sam Wilson', 'Inventory manager', 'SW']].map(([name, role, initials]) => <div className="team-card" key={name}><div className="avatar team-avatar">{initials}</div><div><b>{name}</b><span>{role}</span></div><span className="status-pill success">Active</span></div>)}</div>
+}

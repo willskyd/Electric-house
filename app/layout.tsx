@@ -1,6 +1,8 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
+import './tailwind.css'
 import './globals.css'
+import './topbar-mobile.css'
 
 export const metadata: Metadata = {
   title: 'micro-mec — Inventory workspace',
