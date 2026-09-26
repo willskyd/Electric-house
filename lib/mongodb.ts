@@ -1,12 +1,10 @@
 import { MongoClient } from "mongodb";
 
-const uri = process.env.MONGODB_URI
+const uri = process.env.MONGODB_URI;
 
 if (!uri) {
-  throw new Error('Please define MONGODB_URI in your .env file')
+  throw new Error("Please define MONGODB_URI in your .env file");
 }
-
-const mongoUri: string = uri
 
 const options = {
   serverSelectionTimeoutMS: 10000,
@@ -20,24 +18,13 @@ declare global {
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 
-function createMongoClient() {
-  const client = new MongoClient(mongoUri, options);
-
-  const promise = client.connect().catch((error) => {
-    // Remove the failed connection so the next request can reconnect.
-    global._mongoClientPromise = undefined;
-
-    console.error("MongoDB connection failed:", error);
-
-    throw error;
-  });
-
-  global._mongoClientPromise = promise;
-
-  return promise;
-}
+const client = new MongoClient(uri, options);
 
 const clientPromise =
-  global._mongoClientPromise ?? createMongoClient();
+  global._mongoClientPromise ?? client.connect();
+
+if (process.env.NODE_ENV !== "production") {
+  global._mongoClientPromise = clientPromise;
+}
 
 export default clientPromise;
