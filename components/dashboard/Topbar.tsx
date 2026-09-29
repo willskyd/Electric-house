@@ -65,26 +65,50 @@ export function Topbar({
               </span>
             )}
             {notifications && (
-              <div className="absolute right-0 top-12 z-50 w-72 rounded-2xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-[#163d25]">
-                <div className="mb-2 flex items-center justify-between">
-                  <b className="text-sm text-slate-900 dark:text-slate-50 px-4">Activity</b>
-                  <span className="text-[11px] text-slate-500">{unreadCount} unread</span>
-                </div>
-                <div className="space-y-2">
-                  {latestActivities.map((a) => (
-                    <button key={a.id} type="button" 
-                    onClick={() => onViewNotification(a)} 
-                    className="flex w-full items-start gap-3 rounded-xl  px-4 py-2 text-left transition hover:bg-slate-100 dark:hover:bg-slate-800">
-                      {!a.read && <span className="mt-2 h-2.5 w-2.5 rounded-full bg-slate-900 dark:bg-slate-200" />}
-                      <span className="flex-1">
-                        <b className="block text-xs text-slate-900 dark:text-slate-50">{a.text}</b>
-                        <small className="mt-1 block text-[11px] text-slate-500">{a.time}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+  <div
+    className="
+      absolute right-0 top-12 z-50 w-72 rounded-2xl border border-slate-200 bg-white p-3 shadow-xl
+      dark:border-slate-700 dark:bg-[#163d25]
+
+      /* Mobile only */
+      max-md:fixed 
+      max-md:left-0 
+      max-md:right-auto 
+      max-md:top-16 
+      max-md:w-[260px] 
+      max-md:rounded-l-none
+      max-md:rounded-t-none
+    "
+  >
+    <div className="mb-2 flex items-center justify-between px-1">
+      <b className="text-sm text-slate-900 dark:text-slate-50">Activity</b>
+      <span className="text-[11px] text-slate-500">{unreadCount} unread</span>
+    </div>
+
+    <div className="space-y-1">
+      {latestActivities.map((a) => (
+        <button
+          key={a.id}
+          type="button"
+          onClick={() => onViewNotification(a)}
+          className="flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-100 dark:hover:bg-slate-800"
+        >
+          {!a.read && (
+            <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-slate-900 dark:bg-slate-200" />
+          )}
+          <span className="min-w-0 flex-1">
+            <b className="block text-xs leading-snug text-slate-900 dark:text-slate-50">
+              {a.text}
+            </b>
+            <small className="mt-1 block text-[11px] text-slate-500">
+              {a.time}
+            </small>
+          </span>
+        </button>
+      ))}
+    </div>
+  </div>
+)}
           </div>
 
           <button className="relative grid h-9 w-9 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={onOpenInbox} aria-label="Inbox">

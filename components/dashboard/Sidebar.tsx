@@ -52,7 +52,7 @@ export function Sidebar({
             <button key={label} className={section === label ? 'nav-item active' : 'nav-item'} onClick={() => onGo(label as Section)} title={!sidebar ? label : undefined}>
               <Icon />
               <span className="nav-label-text">{label}</span>
-              {label === 'New Stocks' && <span className="nav-count">3</span>}
+              {label === 'New Stocks' }
             </button>
           )
         })}

@@ -55,9 +55,9 @@ const [debts, setDebts] = useState<Debt[]>([])
   const hasLoadedState = useRef(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
-  const [dark, setDark] = useState(true)
+  const [dark, setDark] = useState(false)
   const [settings, setSettings] = useState({ workspace: 'Acme Market', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
-  const [sidebar, setSidebar] = useState(true)
+  const [sidebar, setSidebar] = useState(false)
   const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
   const [selectedDebt, setSelectedDebt] = useState<Debt | null>(null)
   const [toast, setToast] = useState('')
@@ -561,7 +561,7 @@ const formatCurrency = (amount: number) => {
                 {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : 'Keep an eye on your products and stock levels.'}
               </p>
             </div>
-            {!['Overview', 'Paid', 'Settings', 'Team members'].includes(section) && (
+            {!['Overview', 'Paid', 'Settings', 'Team members', 'Inbox'].includes(section) && (
               <button className="primary-button" onClick={() => setModal(section === 'Debt' ? 'debt' : section === 'New Stocks' ? 'receipt' : 'product')}>
                 <Plus />
                 {section === 'Debt' ? 'Add debt' : section === 'New Stocks' ? 'Record stock' : 'Add product'}
@@ -1253,74 +1253,195 @@ function DebtTable({ debts, paid, onOpen, currency }: { debts: Debt[]; paid: boo
   <span>{paid ? 'Completed payments will appear here.' : 'All customer balances are clear.'}</span></div>}</div>
 }
 
-function DebtDetail({ debt, readOnly, onClose, onSave }: { debt: Debt; readOnly: boolean; onClose: () => void; onSave: (d: Debt, fullyPaid: boolean) => void }) {
+function DebtDetail({
+  debt,
+  readOnly,
+  onClose,
+  onSave,
+}: {
+  debt: Debt
+  readOnly: boolean
+  onClose: () => void
+  onSave: (d: Debt, fullyPaid: boolean) => void
+}) {
   const [draft, setDraft] = useState<Debt>(JSON.parse(JSON.stringify(debt)))
-  const paidTotal = draft.payments.reduce((a, p) => a + Math.max(0, Number(p.amount) || 0), 0)
+
+  // IDs of payments that already existed when the modal was opened
+  const originalPaymentIds = useMemo(
+    () => new Set(debt.payments.map((p) => p.id)),
+    [debt.payments]
+  )
+
+  const paidTotal = draft.payments.reduce(
+    (a, p) => a + Math.max(0, Number(p.amount) || 0),
+    0
+  )
   const balance = Math.max(0, (Number(draft.amount) || 0) - paidTotal)
-  const updateItem = (i: number, key: 'name' | 'price', value: string) => setDraft((d) => {
-    const items = d.items.map((it, n) => n === i ? { ...it, [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value } : it)
-    return { ...d, items, amount: items.reduce((sum, item) => sum + Math.max(0, Number(item.price) || 0), 0) }
-  })
 
-  return <div className="modal-backdrop"><div className="modal wide"><div className="modal-header"><div><div className="eyebrow">Debt detail</div><h2>{draft.customer}</h2><p>{draft.invoice} · Created {draft.createdAt}</p></div><button className="icon-button" onClick={onClose}><X /></button></div><div className="detail-grid"><label>Customer name<input disabled={readOnly} value={draft.customer} onChange={(e) => setDraft({ ...draft, customer: e.target.value })} /></label>
-  <label>Original debt amount
-    <input
-  type="number"
-  disabled={readOnly}
-  value={draft.amount}
-  onChange={(e) =>
-    setDraft({ ...draft, amount: Number(e.target.value) })
-  }
-   />    
-   </label></div>
-  <h3>Items bought</h3><div className="editable-list">{draft.items.map((item, i) => <div className="editable-row" key={i}>
-    <input
-  disabled={readOnly}
-  value={item.name}
-  onChange={(e) => updateItem(i, 'name', e.target.value)}
-  />
-
-   <input
-  type="number"
-  disabled={readOnly}
-  value={item.price}
-  onChange={(e) => updateItem(i, 'price', e.target.value)}
-  />
-    </div>)}{!readOnly && <button className="secondary-button" onClick={() => setDraft((d) => ({ ...d, items: [...d.items, { name: 'New item', price: 0 }] }))}><Plus />Add item</button>}</div><h3>Part payments</h3><div className="payment-list">{draft.payments.map((p, i) => <div className="editable-row" key={p.id}>
-  <input
-  type="number"
-  disabled={readOnly}
-  value={p.amount}
-  onChange={(e) =>
-    setDraft((d) => ({
-      ...d,
-      payments: d.payments.map((x, n) =>
-        n === i ? { ...x, amount: Number(e.target.value) } : x
+  const updateItem = (i: number, key: 'name' | 'price', value: string) =>
+    setDraft((d) => {
+      const items = d.items.map((it, n) =>
+        n === i
+          ? {
+              ...it,
+              [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value,
+            }
+          : it
       )
-    }))
-  }
-   />    
-<span>{p.date}</span></div>)}{!readOnly && <button className="secondary-button" onClick={() => setDraft((d) => ({ ...d, payments: [...d.payments, { id: Date.now(), amount: 0, date: now() }] }))}><Plus />Add payment</button>}</div>
-<div className="summary-row">
-  <div>
-    <span>{readOnly ? 'Paid in full' : 'Balance'}</span>
-    <strong>
-      {readOnly ? money(draft.amount) : money(balance)}
-    </strong>
-  </div>
+      return {
+        ...d,
+        items,
+        amount: items.reduce(
+          (sum, item) => sum + Math.max(0, Number(item.price) || 0),
+          0
+        ),
+      }
+    })
 
-  {!readOnly && (
-    <button
-      className="primary-button"
-      onClick={() => onSave(draft, balance <= 0)}
-    >
-      {balance <= 0 ? 'Mark as paid' : 'Save changes'}
-    </button>
-  )}
-</div>
-</div>
-</div>
+  return (
+    <div className="modal-backdrop">
+      <div className="modal wide">
+        <div className="modal-header">
+          <div>
+            <div className="eyebrow">Debt detail</div>
+            <h2>{draft.customer}</h2>
+            <p>
+              {draft.invoice} · Created {draft.createdAt}
+            </p>
+          </div>
+          <button className="icon-button" onClick={onClose}>
+            <X />
+          </button>
+        </div>
+
+        <div className="detail-grid">
+          <label>
+            Customer name
+            <input
+              disabled={readOnly}
+              value={draft.customer}
+              onChange={(e) =>
+                setDraft({ ...draft, customer: e.target.value })
+              }
+            />
+          </label>
+
+          <label>
+            Original debt amount
+            <input
+              type="number"
+              disabled={readOnly}
+              value={draft.amount}
+              onChange={(e) =>
+                setDraft({ ...draft, amount: Number(e.target.value) })
+              }
+            />
+          </label>
+        </div>
+
+        <h3>Items bought</h3>
+        <div className="editable-list">
+          {draft.items.map((item, i) => (
+            <div className="editable-row" key={i}>
+              <input
+                disabled={readOnly}
+                value={item.name}
+                onChange={(e) => updateItem(i, 'name', e.target.value)}
+              />
+              <input
+                type="number"
+                disabled={readOnly}
+                value={item.price}
+                onChange={(e) => updateItem(i, 'price', e.target.value)}
+              />
+            </div>
+          ))}
+          {!readOnly && (
+            <button
+              className="secondary-button"
+              onClick={() =>
+                setDraft((d) => ({
+                  ...d,
+                  items: [...d.items, { name: 'New item', price: 0 }],
+                }))
+              }
+            >
+              <Plus />
+              Add item
+            </button>
+          )}
+        </div>
+
+        <h3>Part payments</h3>
+        <div className="payment-list">
+          {draft.payments.map((p, i) => {
+            // Lock payment if it already existed when the modal was opened
+            const isLocked = readOnly || originalPaymentIds.has(p.id)
+
+            return (
+              <div className="editable-row" key={p.id}>
+                <input
+                  type="number"
+                  disabled={isLocked}
+                  value={p.amount}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      payments: d.payments.map((x, n) =>
+                        n === i
+                          ? { ...x, amount: Number(e.target.value) }
+                          : x
+                      ),
+                    }))
+                  }
+                />
+                <span>{p.date}</span>
+              </div>
+            )
+          })}
+
+          {!readOnly && (
+            <button
+              className="secondary-button"
+              onClick={() =>
+                setDraft((d) => ({
+                  ...d,
+                  payments: [
+                    ...d.payments,
+                    { id: Date.now(), amount: 0, date: now() },
+                  ],
+                }))
+              }
+            >
+              <Plus />
+              Add payment
+            </button>
+          )}
+        </div>
+
+        <div className="summary-row">
+          <div>
+            <span>{readOnly ? 'Paid in full' : 'Balance'}</span>
+            <strong>
+              {readOnly ? money(draft.amount) : money(balance)}
+            </strong>
+          </div>
+
+          {!readOnly && (
+            <button
+              className="primary-button"
+              onClick={() => onSave(draft, balance <= 0)}
+            >
+              {balance <= 0 ? 'Mark as paid' : 'Save changes'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
+
+
 
 function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
   return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}><div className="modal"><div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'debt' ? 'Add customer debt' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div><form onSubmit={onSubmit}><label>{type === 'debt' ? 'Customer name' : 'Name or reference'}<input name={type === 'debt' ? 'customer' : 'name'} required placeholder={type === 'debt' ? 'e.g. Harbor Market' : 'e.g. Premium Rice 25kg'} /></label>{type === 'product' && <div className="form-row"><label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label><label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label><label>Price<input name="price" type="number" min="0" step="0.01" required /></label><label>Quantity<input name="stock" type="number" min="0" required /></label></div>}{type === 'debt' && <><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg" /></label><label>Amount<input name="amount" type="number" min="1" required /></label></>}{type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div></form></div></div>
