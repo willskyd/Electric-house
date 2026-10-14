@@ -57,7 +57,7 @@ const [debts, setDebts] = useState<Debt[]>([])
   const [statusFilter, setStatusFilter] = useState('All')
   const [dark, setDark] = useState(false)
   const [settings, setSettings] = useState({ workspace: 'Acme Market', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
-  const [sidebar, setSidebar] = useState(false)
+  const [sidebar, setSidebar] = useState(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
   const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
   const [selectedDebt, setSelectedDebt] = useState<Debt | null>(null)
   const [toast, setToast] = useState('')
@@ -245,18 +245,29 @@ const notify = async (
     [debts, query, section],
   )
 
+  const closeOverlays = () => {
+    setModal(null)
+    setSelectedDebt(null)
+    setDeleteProduct(null)
+    setDeleteReceipt(null)
+    setNotifications(false)
+    setMenuOpen(false)
+
+    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+      setSidebar(false)
+    }
+  }
+
   const go = (s: Section) => {
+    closeOverlays()
     setSection(s)
     setQuery('')
     setStatusFilter('All')
-    setNotifications(false)
-    setMenuOpen(false)
   }
 
   const openInbox = () => {
+    closeOverlays()
     setSection('Inbox')
-    setNotifications(false)
-    setMenuOpen(false)
     if (!selectedInbox && activities[0]) setSelectedInbox(activities[0])
   }
 
@@ -270,8 +281,8 @@ const notify = async (
   )
 
   setSelectedInbox({ ...activity, read: true })
+  closeOverlays()
   setSection('Inbox')
-  setNotifications(false)
 
   try {
     const response = await fetch(`/api/activities/${activity.id}`, {
@@ -1265,6 +1276,7 @@ function DebtDetail({
   onSave: (d: Debt, fullyPaid: boolean) => void
 }) {
   const [draft, setDraft] = useState<Debt>(JSON.parse(JSON.stringify(debt)))
+  const isSavedDebt = Boolean(debt.id)
 
   // IDs of payments that already existed when the modal was opened
   const originalPaymentIds = useMemo(
@@ -1300,7 +1312,7 @@ function DebtDetail({
 
   return (
     <div className="modal-backdrop">
-      <div className="modal wide">
+      <div className="modal wide debt-detail-modal">
         <div className="modal-header">
           <div>
             <div className="eyebrow">Debt detail</div>
@@ -1314,109 +1326,114 @@ function DebtDetail({
           </button>
         </div>
 
-        <div className="detail-grid">
-          <label>
-            Customer name
-            <input
-              disabled={readOnly}
-              value={draft.customer}
-              onChange={(e) =>
-                setDraft({ ...draft, customer: e.target.value })
-              }
-            />
-          </label>
-
-          <label>
-            Original debt amount
-            <input
-              type="number"
-              disabled={readOnly}
-              value={draft.amount}
-              onChange={(e) =>
-                setDraft({ ...draft, amount: Number(e.target.value) })
-              }
-            />
-          </label>
-        </div>
-
-        <h3>Items bought</h3>
-        <div className="editable-list">
-          {draft.items.map((item, i) => (
-            <div className="editable-row" key={i}>
+        <div className="debt-detail-body modal-scroll-body">
+          <div className="detail-grid">
+            <label>
+              Customer name
               <input
-                disabled={readOnly}
-                value={item.name}
-                onChange={(e) => updateItem(i, 'name', e.target.value)}
+                disabled={readOnly || isSavedDebt}
+                value={draft.customer}
+                onChange={(e) =>
+                  setDraft({ ...draft, customer: e.target.value })
+                }
               />
+            </label>
+
+            <label>
+              Original debt amount
               <input
                 type="number"
-                disabled={readOnly}
-                value={item.price}
-                onChange={(e) => updateItem(i, 'price', e.target.value)}
+                disabled={readOnly || isSavedDebt}
+                value={draft.amount}
+                onChange={(e) =>
+                  setDraft({ ...draft, amount: Number(e.target.value) })
+                }
               />
-            </div>
-          ))}
-          {!readOnly && (
-            <button
-              className="secondary-button"
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  items: [...d.items, { name: 'New item', price: 0 }],
-                }))
-              }
-            >
-              <Plus />
-              Add item
-            </button>
-          )}
-        </div>
+            </label>
+          </div>
 
-        <h3>Part payments</h3>
-        <div className="payment-list">
-          {draft.payments.map((p, i) => {
-            // Lock payment if it already existed when the modal was opened
-            const isLocked = readOnly || originalPaymentIds.has(p.id)
+          <h3>Items bought</h3>
+          <div className="editable-list">
+            {draft.items.map((item, i) => {
+              const isExistingItem = i < debt.items.length
 
-            return (
-              <div className="editable-row" key={p.id}>
-                <input
-                  type="number"
-                  disabled={isLocked}
-                  value={p.amount}
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      payments: d.payments.map((x, n) =>
-                        n === i
-                          ? { ...x, amount: Number(e.target.value) }
-                          : x
-                      ),
-                    }))
-                  }
-                />
-                <span>{p.date}</span>
-              </div>
-            )
-          })}
+              return (
+                <div className="editable-row" key={i}>
+                  <input
+                    disabled={readOnly || (isExistingItem && isSavedDebt)}
+                    value={item.name}
+                    onChange={(e) => updateItem(i, 'name', e.target.value)}
+                  />
+                  <input
+                    type="number"
+                    disabled={readOnly || (isExistingItem && isSavedDebt)}
+                    value={item.price}
+                    onChange={(e) => updateItem(i, 'price', e.target.value)}
+                  />
+                </div>
+              )
+            })}
+            {!readOnly && (
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  setDraft((d) => ({
+                    ...d,
+                    items: [...d.items, { name: 'New item', price: 0 }],
+                  }))
+                }
+              >
+                <Plus />
+                Add item
+              </button>
+            )}
+          </div>
 
-          {!readOnly && (
-            <button
-              className="secondary-button"
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  payments: [
-                    ...d.payments,
-                    { id: Date.now(), amount: 0, date: now() },
-                  ],
-                }))
-              }
-            >
-              <Plus />
-              Add payment
-            </button>
-          )}
+          <h3>Part payments</h3>
+          <div className="payment-list">
+            {draft.payments.map((p, i) => {
+              const isLocked = readOnly || originalPaymentIds.has(p.id)
+
+              return (
+                <div className="editable-row" key={p.id}>
+                  <input
+                    type="number"
+                    disabled={isLocked}
+                    value={p.amount}
+                    onChange={(e) =>
+                      setDraft((d) => ({
+                        ...d,
+                        payments: d.payments.map((x, n) =>
+                          n === i
+                            ? { ...x, amount: Number(e.target.value) }
+                            : x
+                        ),
+                      }))
+                    }
+                  />
+                  <span>{p.date}</span>
+                </div>
+              )
+            })}
+
+            {!readOnly && (
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  setDraft((d) => ({
+                    ...d,
+                    payments: [
+                      ...d.payments,
+                      { id: Date.now(), amount: 0, date: now() },
+                    ],
+                  }))
+                }
+              >
+                <Plus />
+                Add payment
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="summary-row">

@@ -56,8 +56,157 @@
 .welcome-card p{color:var(--muted);font-size:13px}
 
 .pulse-orb{display:grid;place-items:center;width:75px;height:75px;border-radius:50%;background:var(--green);color:#fff}.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.quick-grid button{position:relative;text-align:left;border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:20px;color:var(--fg)}
-.quick-grid button>svg:first-child{color:var(--green);width:20px}.quick-grid b,.quick-grid span{display:block;margin-top:12px}.quick-grid span{font-size:11px;color:var(--muted)}.quick-grid button>svg:last-child{position:absolute;right:18px;top:20px;color:var(--muted)}.modal-backdrop{position:fixed;inset:0;z-index:10;display:grid;place-items:center;padding:20px;background:rgba(5,13,8,.64)}
-.modal{width:min(480px,100%);max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;box-shadow:0 20px 70px rgba(0,0,0,.25)}.modal.wide{width:min(680px,100%)}.modal-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.modal h2{margin:0;font-size:22px;letter-spacing:-.04em}.modal p{color:var(--muted);font-size:11px}
+.quick-grid button>svg:first-child{color:var(--green);width:20px}.quick-grid b,.quick-grid span{display:block;margin-top:12px}.quick-grid span{font-size:11px;color:var(--muted)}.quick-grid button>svg:last-child{position:absolute;right:18px;top:20px;color:var(--muted)}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: rgba(5, 13, 8, 0.64);
+}
+
+.modal {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.25);
+}
+
+.modal.wide {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+
+.modal .summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+@media (max-width: 560px) {
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 12px 10px 18px;
+    overflow: hidden;
+  }
+
+  .modal,
+  .modal.wide {
+    width: 100%;
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 18px 18px 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .modal .summary-row {
+    position: relative;
+    bottom: auto;
+    z-index: 2;
+    margin: 16px -18px 0;
+    padding: 14px 18px calc(18px + env(safe-area-inset-bottom));
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.04);
+    flex-shrink: 0;
+  }
+
+  .modal .summary-row > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .modal-scroll-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: 8px;
+  }
+}
+
+/* ========== Debt Detail – sticky footer ONLY on mobile (above MobileNav) ========== */
+@media (max-width: 560px) {
+  .debt-detail-modal {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    /* Leave room for the fixed mobile nav and safe-area inset */
+    height: calc(100dvh - 24px - 86px);
+    max-height: calc(100dvh - 24px - 86px);
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior-y: contain;
+    padding: 16px 16px 0;
+  }
+
+  .debt-detail-modal .modal-header {
+    flex-shrink: 0;
+    margin-bottom: 12px;
+  }
+
+  .debt-detail-modal .debt-detail-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    padding-bottom: 16px;
+    margin-right: -4px;
+    padding-right: 4px;
+  }
+
+  .debt-detail-modal > .summary-row {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    flex-shrink: 0;
+    margin: 12px -16px 0;
+    padding: 14px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.04);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+}
+.modal.wide{width:min(680px,100%)}.modal-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px}.modal h2{margin:0;font-size:22px;letter-spacing:-.04em}.modal p{color:var(--muted);font-size:11px}
 .modal form,.settings-page{display:flex;flex-direction:column;gap:16px}.modal label,.settings-page label{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-size:11px;font-weight:700}.modal input,.modal select,.settings-page input,.settings-page select{border:1px solid var(--line);background:var(--bg);border-radius:7px;color:var(--fg);padding:11px;outline:0;font-size:12px}
 .modal input:focus,.settings-page input:focus{border-color:var(--green)}.form-row,.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.form-row label:last-child{grid-column:1/-1}.modal-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:18px;flex-wrap:wrap}.modal h3{font-size:12px;margin:22px 0 10px}.editable-list,.payment-list{display:flex;flex-direction:column;gap:8px}
 .editable-row{display:flex;gap:8px;align-items:center}.editable-row input{flex:1}.editable-row span{font-size:10px;color:var(--muted);min-width:180px}.balance-card{display:flex;justify-content:space-between;align-items:center;background:var(--soft);padding:15px;border-radius:9px;margin-top:20px}.balance-card span{font-size:11px;color:var(--muted)}.balance-card strong{font-size:22px;color:var(--green)}
