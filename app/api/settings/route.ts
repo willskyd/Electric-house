@@ -14,20 +14,24 @@ const defaultSettings = {
 
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
+    const collection = db.collection(COLLECTION);
 
-    let settings = await db
-      .collection(COLLECTION)
-      .findOne({ key: "workspace" });
+    let settings = await collection.findOne({ key: "workspace" });
 
     if (!settings) {
-      settings = {
+      const newSettings = {
         key: "workspace",
         ...defaultSettings,
       };
 
-      await db.collection(COLLECTION).insertOne(settings);
+      await collection.insertOne(newSettings);
+      settings = await collection.findOne({ key: "workspace" });
+    }
+
+    if (!settings) {
+      throw new Error("Settings could not be loaded");
     }
 
     const { _id, key, ...publicSettings } = settings;
@@ -70,10 +74,11 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
+    const collection = db.collection(COLLECTION);
 
-    await db.collection(COLLECTION).updateOne(
+    await collection.updateOne(
       { key: "workspace" },
       {
         $set: {
@@ -84,9 +89,7 @@ export async function PATCH(request: Request) {
       { upsert: true }
     );
 
-    const settings = await db
-      .collection(COLLECTION)
-      .findOne({ key: "workspace" });
+    const settings = await collection.findOne({ key: "workspace" });
 
     if (!settings) {
       throw new Error("Settings could not be saved");

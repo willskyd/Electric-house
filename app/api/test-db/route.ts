@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await clientPromise();
 
     await client.db("Dashboard").command({ ping: 1 });
 

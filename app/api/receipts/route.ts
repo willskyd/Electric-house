@@ -7,7 +7,7 @@ const COLLECTION = "receipts";
 // GET all receipts
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const receipts = await db
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const lastReceipt = await db

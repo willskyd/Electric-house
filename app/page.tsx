@@ -40,13 +40,31 @@ import MobileNav from '../components/dashboard/MobileNav'
 import Inbox from '../components/dashboard/Inbox'
 import { LoginScreen } from '../components/dashboard/LoginScreen'
 import { OverviewSection } from '../components/dashboard/sections/OverviewSection'
+import { PosCart } from '../components/dashboard/PosCart'
 import { initialActivities, initialDebts, initialProducts } from '../components/dashboard/data'
 import type { Activity, Debt, Product, Payment, Receipt, Section } from '../components/dashboard/types'
 import { money, now, Stat, daysAgo } from '../components/dashboard/utils'
 
+function isProductList(value: unknown): value is Product[] {
+  return Array.isArray(value) && value.every((item: unknown) =>
+    typeof item === 'object' && item !== null &&
+    'id' in item && typeof item.id === 'number' &&
+    'name' in item && typeof item.name === 'string' &&
+    'model' in item && typeof item.model === 'string' &&
+    'sku' in item && typeof item.sku === 'string' &&
+    (!('barcode' in item) || typeof item.barcode === 'string') &&
+    'category' in item && typeof item.category === 'string' &&
+    'stock' in item && typeof item.stock === 'number' &&
+    'price' in item && typeof item.price === 'number' &&
+    'status' in item && typeof item.status === 'string',
+  )
+}
+
 export default function Page() {
   const [section, setSection] = useState<Section>('Overview')
   const [products, setProducts] = useState<Product[]>([])
+  const [productsLoading, setProductsLoading] = useState(true)
+  const [productsError, setProductsError] = useState('')
 const [debts, setDebts] = useState<Debt[]>([])
   const [receipts, setReceipts] = useState<Receipt[]>([])
   const [deleteProduct, setDeleteProduct] = useState<Product | null>(null)
@@ -93,38 +111,46 @@ const [debts, setDebts] = useState<Debt[]>([])
   }, [hydrated, products, debts, activities])
 
  useEffect(() => {
-  async function loadDashboardData() {
-    try {
-      const [productsRes, debtsRes, receiptsRes, activitiesRes] =
-        await Promise.all([
-          fetch('/api/products'),
-          fetch('/api/debts'),
-          fetch('/api/receipts'),
-          fetch('/api/activities'),
-        ])
+  let cancelled = false
 
-      if (
-        !productsRes.ok ||
-        !debtsRes.ok ||
-        !receiptsRes.ok ||
-        !activitiesRes.ok
-      ) {
-        throw new Error('Failed to load dashboard data')
+  async function loadProducts() {
+    try {
+      const response = await fetch('/api/products')
+      if (!response.ok) throw new Error('Product inventory request failed')
+      const data: unknown = await response.json()
+      if (!isProductList(data)) throw new Error('Product inventory returned invalid data')
+      if (cancelled) return
+      setProducts(data)
+      setProductsError('')
+    } catch (error) {
+      console.error('Failed to load products:', error)
+      if (!cancelled) {
+        setProductsError('Inventory could not be loaded. Reload the dashboard before scanning or checking out.')
+      }
+    } finally {
+      if (!cancelled) setProductsLoading(false)
+    }
+  }
+
+  async function loadOtherDashboardData() {
+    try {
+      const [debtsRes, receiptsRes, activitiesRes] = await Promise.all([
+        fetch('/api/debts'),
+        fetch('/api/receipts'),
+        fetch('/api/activities'),
+      ])
+
+      if (!debtsRes.ok || !receiptsRes.ok || !activitiesRes.ok) {
+        throw new Error('Dashboard data request failed')
       }
 
-      const [
-        productsData,
-        debtsData,
-        receiptsData,
-        activitiesData,
-      ] = await Promise.all([
-        productsRes.json(),
+      const [debtsData, receiptsData, activitiesData] = await Promise.all([
         debtsRes.json(),
         receiptsRes.json(),
         activitiesRes.json(),
       ])
+      if (cancelled) return
 
-      setProducts(Array.isArray(productsData) ? productsData : [])
       setDebts(Array.isArray(debtsData) ? debtsData : [])
       setReceipts(Array.isArray(receiptsData) ? receiptsData : [])
       setActivities(Array.isArray(activitiesData) ? activitiesData : [])
@@ -133,11 +159,13 @@ const [debts, setDebts] = useState<Debt[]>([])
         setSelectedInbox(activitiesData[0])
       }
     } catch (error) {
-      console.error('Failed to load dashboard data:', error)
+      console.error('Failed to load other dashboard data:', error)
     }
   }
 
-  loadDashboardData()
+  void loadProducts()
+  void loadOtherDashboardData()
+  return () => { cancelled = true }
 }, [])
 
 useEffect(() => {
@@ -332,10 +360,21 @@ const notify = async (
   })
 
   if (!response.ok) {
-    throw new Error('Failed to update product')
+    const result = await response.json().catch(() => null)
+    throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to update product')
   }
 
   return response.json()
+}
+
+const refreshPosProducts = async (): Promise<Product[]> => {
+  const response = await fetch('/api/products')
+  if (!response.ok) throw new Error('Could not refresh inventory after checkout validation')
+  const result: unknown = await response.json()
+  if (!isProductList(result)) throw new Error('Inventory returned invalid product data')
+  setProducts(result)
+  setProductsError('')
+  return result
 }
 
 const deleteProductOnServer = async (id: number) => {
@@ -369,15 +408,21 @@ const formatCurrency = (amount: number) => {
   const f = new FormData(e.currentTarget)
   const stock = Number(f.get('stock'))
   const model = String(f.get('model') || '').trim()
+  const barcode = String(f.get('barcode') || '').trim()
 
   const newProduct = {
     name: String(f.get('name')),
     model: model || `MEC-${String(Date.now()).slice(-5).toUpperCase()}`,
     sku: model || `NEW-${String(Date.now()).slice(-4)}`,
+    barcode,
     category: String(f.get('category')),
     stock,
     price: Number(f.get('price')),
-    status: stock === 0 ? 'Out of stock' : stock < 30 ? 'Low stock' : 'In stock',
+    status: stock === 0
+      ? 'Out of stock'
+      : stock <= Math.max(0, Number(settings.lowStockThreshold) || 0)
+        ? 'Low stock'
+        : 'In stock',
   }
 
   try {
@@ -390,7 +435,8 @@ const formatCurrency = (amount: number) => {
     })
 
     if (!response.ok) {
-      throw new Error('Failed to add product')
+      const result = await response.json().catch(() => null)
+      throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to add product')
     }
 
     const savedProduct = await response.json()
@@ -413,7 +459,7 @@ const formatCurrency = (amount: number) => {
   
   catch (error) {
     console.error(error)
-    setToast('Failed to add product')
+    setToast(error instanceof Error ? error.message : 'Failed to add product')
   }
 }
 
@@ -564,7 +610,7 @@ const formatCurrency = (amount: number) => {
         />
 
         <div className="page-wrap">
-          <div className="page-heading">
+          {section !== 'POS' && <div className="page-heading">
             <div>
               <div className="eyebrow">{section === 'Overview' ? 'Good morning, Alex' : 'Workspace'}</div>
               <h1>{section}</h1>
@@ -578,9 +624,11 @@ const formatCurrency = (amount: number) => {
                 {section === 'Debt' ? 'Add debt' : section === 'New Stocks' ? 'Record stock' : 'Add product'}
               </button>
             )}
-          </div>
+          </div>}
 
           {section === 'Overview' && <OverviewSection outstanding={outstanding} onGo={go} />}
+
+          <PosCart active={section === 'POS'} products={products} productsLoading={productsLoading} productsError={productsError} currency={settings.currency} workspace={settings.workspace} onRefreshProducts={refreshPosProducts} onOpen={() => go('POS')} />
 
           {section === 'Stocks' && (
             <>
@@ -605,78 +653,82 @@ const formatCurrency = (amount: number) => {
                   products={filteredProducts}
                   onNotify={notify}
 
-             onStatusChange={async (id, status) => {
-              try {
-                const updatedProduct = await updateProductOnServer(id, { status })
+                  lowStockThreshold={Math.max(0, Number(settings.lowStockThreshold) || 0)}
+                  onSaveEdit={async (id, updates) => {
+                    const currentProduct = products.find((p) => p.id === id)
 
-             setProducts((items) =>
-               items.map((p) => (p.id === id ? updatedProduct : p))
-             )
+                    if (!currentProduct) {
+                      throw new Error('Product not found')
+                    }
 
-              notify(
-             `${updatedProduct.name} status updated`,
-             `Product status changed to ${updatedProduct.status}. Model: ${updatedProduct.model}. SKU: ${updatedProduct.sku}. Current stock: ${updatedProduct.stock} units.`,
-             true,
-               {
-               type: 'product',
-               product: updatedProduct.name,
-               quantity: updatedProduct.stock,
-               }
-                )
-               } catch (error) {
-                console.error(error)
-                 setToast('Failed to update product')
-               }
-               }}                  
-                  onEdit={async (id, key, value) => {
-  const currentProduct = products.find((p) => p.id === id)
+                    const stock = Math.max(
+                      0,
+                      Number(updates.stock ?? currentProduct.stock) || 0
+                    )
+                    const price = Math.max(
+                      0,
+                      Number(updates.price ?? currentProduct.price) || 0
+                    )
+                    const threshold = Math.max(
+                      0,
+                      Number(settings.lowStockThreshold) || 0
+                    )
 
-  if (!currentProduct) {
-    setToast('Product not found')
-    return
-  }
+                    const status =
+                      updates.status === 'Discontinued' ||
+                      (updates.status !== 'Automatic' && currentProduct.status === 'Discontinued')
+                        ? 'Discontinued'
+                        : stock === 0
+                          ? 'Out of stock'
+                          : stock <= threshold
+                            ? 'Low stock'
+                            : 'In stock'
 
-  const updates = {
-    [key]: key === 'stock' || key === 'price' ? Number(value) : value,
-  }
+                    try {
+                      const updatedProduct = await updateProductOnServer(id, {
+                        ...updates,
+                        stock,
+                        price,
+                        status,
+                      })
 
-  try {
-    const updatedProduct = await updateProductOnServer(id, updates)
+                      setProducts((items) =>
+                        items.map((p) => p.id === id ? updatedProduct : p)
+                      )
 
-    setProducts((items) =>
-      items.map((p) => (p.id === id ? updatedProduct : p))
-    )
+                      if (stock !== currentProduct.stock) {
+                        notify(
+                          `${updatedProduct.name} stock updated`,
+                          `Stock changed from ${currentProduct.stock} to ${stock} units. Status: ${status}.`,
+                          true,
+                          {
+                            type: 'stock',
+                            product: updatedProduct.name,
+                            quantity: stock,
+                          }
+                        )
+                      }
 
-    if (key === 'stock') {
-      notify(
-        `${updatedProduct.name} stock updated`,
-        `Stock changed from ${currentProduct.stock} units to ${updatedProduct.stock} units. Model: ${updatedProduct.model}.`,
-        true,
-        {
-          type: 'stock',
-          product: updatedProduct.name,
-          quantity: updatedProduct.stock,
-        }
-      )
-    }
+                      if (price !== currentProduct.price) {
+                        notify(
+                          `${updatedProduct.name} price updated`,
+                          `Price changed from ${money(currentProduct.price, settings.currency)} to ${money(price, settings.currency)}.`,
+                          true,
+                          {
+                            type: 'product',
+                            product: updatedProduct.name,
+                            currency: settings.currency,
+                          }
+                        )
+                      }
 
-    if (key === 'price') {
-      notify(
-        `${updatedProduct.name} price updated`,
-        `Price changed from ${money(currentProduct.price, settings.currency)} to ${money(updatedProduct.price, settings.currency)}. Model: ${updatedProduct.model}.`,
-        true,
-        {
-          type: 'product',
-          product: updatedProduct.name,
-          currency: settings.currency,
-        }
-      )
-    }
-  } catch (error) {
-    console.error(error)
-    setToast('Failed to update product')
-  }
-}}
+                      setToast('Stock changes saved')
+                    } catch (error) {
+                      console.error('Failed to save stock changes:', error)
+                      setToast(error instanceof Error ? error.message : 'Failed to save stock changes')
+                      throw error
+                    }
+                  }}
                   onDelete={(id) => setDeleteProduct(products.find((p) => p.id === id) ?? null)}
                 />
               </section>
@@ -1035,32 +1087,271 @@ function Toolbar({ query, setQuery, statusFilter, setStatusFilter, options }: { 
   return <div className="toolbar"><div className="search"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search products, customers..." /></div><div className="filter-select"><SlidersHorizontal /><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filter"><option value="All">All filters</option>{options.filter((x) => x !== 'All').map((x) => <option key={x}>{x}</option>)}</select></div></div>
 }
 
-function ProductTable({ products, onNotify, onStatusChange, onEdit, onDelete }: { products: Product[]; onNotify: (s: string) => void; onStatusChange: (id: number, status: string) => void; onEdit: (id: number, key: 'name' | 'model' | 'stock' | 'price', value: string) => void; onDelete: (id: number) => void }) {
+function ProductTable({
+  products,
+  onNotify,
+  onSaveEdit,
+  onDelete,
+  lowStockThreshold,
+}: {
+  products: Product[]
+  onNotify: (s: string) => void
+  onSaveEdit: (
+    id: number,
+    updates: Partial<Pick<Product, 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'status'>>
+  ) => Promise<void>
+  onDelete: (id: number) => void
+  lowStockThreshold: number
+}) {
   const [openId, setOpenId] = useState<number | null>(null)
-  const [editingId, setEditingId] = useState<number | null>(null)
+  const [draft, setDraft] = useState<Product | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  return <div className="table-wrap"><table><thead><tr><th>Product</th><th>Category</th><th>In stock</th><th>Unit price</th><th>Status</th><th /></tr></thead><tbody>{products.map((p) => {
-    const isEditing = editingId === p.id
-    return <tr key={p.id}><td><div className="product-name">
-      <div className="product-thumb"><Package /></div>{isEditing ? <div className="flex w-full flex-col gap-2">
-      <input className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900
-       placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-white" 
-       value={p.name ?? ''} onChange={(e) => onEdit(p.id, 'name', e.target.value)} />
-       <input className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900
-        placeholder:text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-white" 
-        value={p.model ?? ''} 
-        onChange={(e) => onEdit(p.id, 'model', e.target.value)} /></div> : <div><b>{p.name}</b><span>{p.model || p.sku}</span></div>}</div>
-        </td><td>{p.category}</td><td>
-        <input className="table-number" type="number" min="0" value={p.stock} 
-        onChange={(e) => onEdit(p.id, 'stock', e.target.value)} aria-label={`Stock for ${p.name}`} /> units</td><td>
-          <input className="table-number price" type="number" min="0" step="0.01" value={p.price} 
-          onChange={(e) => onEdit(p.id, 'price', e.target.value)} aria-label={`Price for ${p.name}`} /></td><td>
-            <select className="status-control" value={p.status} onChange={(e) => onStatusChange(p.id, e.target.value)} 
-            aria-label={`Status for ${p.name}`}><option>In stock</option><option>Low stock</option>
-            <option>Out of stock</option><option>Discontinued</option></select></td><td className="row-actions">
-            <button className="more-button" onClick={() => setOpenId(openId === p.id ? null : p.id)} 
-            aria-label={`More actions for ${p.name}`} aria-expanded={openId === p.id}><MoreHorizontal /></button>{openId === p.id && <div className="stock-menu"><button onClick={() => { onNotify(`${p.name} has ${p.stock} units available`); setOpenId(null) }}>View stock details</button><button onClick={() => { setEditingId(p.id); setOpenId(null) }}>Edit product</button><button onClick={() => { onStatusChange(p.id, p.stock === 0 ? 'In stock' : 'Out of stock'); setOpenId(null) }}>Toggle availability</button><button className="w-full rounded-md px-3 py-2 text-left text-slate-600 transition hover:bg-slate-100" onClick={() => { onDelete(p.id); setOpenId(null) }}>Delete stock</button>{isEditing && <button className="mt-2 w-full rounded-md bg-slate-900 px-3 py-2 text-left text-white transition hover:bg-slate-700" onClick={() => { setEditingId(null); setOpenId(null) }}>Save changes</button>}</div>}</td></tr>
-  })}</tbody></table>{!products.length && <div className="empty"><Package /><b>No products found</b><span>Adjust your search or add a new item.</span></div>}</div>
+  const startEditing = (product: Product) => {
+    setDraft({ ...product })
+    setOpenId(null)
+  }
+
+  const updateDraft = (
+    key: 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'status',
+    value: string
+  ) => {
+    setDraft((current) => {
+      if (!current) return current
+
+      if (key === 'stock' || key === 'price') {
+        const numberValue = Number(value)
+        return {
+          ...current,
+          [key]: Number.isFinite(numberValue)
+            ? Math.max(0, numberValue)
+            : 0,
+        }
+      }
+
+      return { ...current, [key]: value }
+    })
+  }
+
+  const saveDraft = async () => {
+    if (!draft || saving) return
+
+    if (!draft.name.trim()) {
+      onNotify('Product name cannot be empty')
+      return
+    }
+
+    setSaving(true)
+    try {
+      await onSaveEdit(draft.id, {
+        name: draft.name.trim(),
+        model: draft.model.trim(),
+        barcode: draft.barcode?.trim() ?? '',
+        category: draft.category.trim(),
+        stock: draft.stock,
+        price: draft.price,
+        status: draft.status === 'Discontinued' ? 'Discontinued' : 'Automatic',
+      })
+      setDraft(null)
+    } catch {
+      // Keep the draft open so the user can retry.
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Category</th>
+            <th>In stock</th>
+            <th>Unit price</th>
+            <th>Status</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {products.map((product) => {
+            const isEditing = draft?.id === product.id
+            const row = isEditing && draft ? draft : product
+
+            const status =
+              row.status === 'Discontinued'
+                ? 'Discontinued'
+                : row.stock === 0
+                  ? 'Out of stock'
+                  : row.stock <= lowStockThreshold
+                    ? 'Low stock'
+                    : 'In stock'
+
+            return (
+              <tr key={product.id}>
+                <td>
+                  <div className="product-name">
+                    <div className="product-thumb"><Package /></div>
+                    {isEditing ? (
+                      <div className="flex w-full flex-col gap-2">
+                        <input
+                          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                          value={row.name}
+                          onChange={(e) => updateDraft('name', e.target.value)}
+                          aria-label={`Name for ${product.name}`}
+                        />
+                        <input
+                          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                          value={row.model}
+                          onChange={(e) => updateDraft('model', e.target.value)}
+                          aria-label={`Model for ${product.name}`}
+                        />
+                        <input
+                          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                          value={row.barcode ?? ''}
+                          onChange={(e) => updateDraft('barcode', e.target.value)}
+                          aria-label={`Barcode for ${product.name}`}
+                          placeholder="Barcode (optional)"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <b>{product.name}</b>
+                        <span>{product.model || product.sku}</span>
+                        {product.barcode && <span>Barcode: {product.barcode}</span>}
+                      </div>
+                    )}
+                  </div>
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <input
+                      className="table-number"
+                      value={row.category}
+                      onChange={(e) => updateDraft('category', e.target.value)}
+                      aria-label={`Category for ${product.name}`}
+                    />
+                  ) : product.category}
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <input
+                      className="table-number"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={row.stock}
+                      onChange={(e) => updateDraft('stock', e.target.value)}
+                      aria-label={`Stock for ${product.name}`}
+                    />
+                  ) : product.stock}
+                  {' '}units
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <input
+                      className="table-number price"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.price}
+                      onChange={(e) => updateDraft('price', e.target.value)}
+                      aria-label={`Price for ${product.name}`}
+                    />
+                  ) : product.price}
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <select
+                      className="status-control"
+                      value={row.status === 'Discontinued' ? 'Discontinued' : 'Automatic'}
+                      onChange={(e) => updateDraft('status', e.target.value)}
+                      aria-label={`Availability for ${product.name}`}
+                    >
+                      <option value="Automatic">Automatic</option>
+                      <option value="Discontinued">Discontinued</option>
+                    </select>
+                  ) : (
+                    <span className="status-pill">{status}</span>
+                  )}
+                </td>
+
+                <td className="row-actions">
+                  {isEditing ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="primary-button"
+                        disabled={saving}
+                        onClick={saveDraft}
+                      >
+                        {saving ? 'Saving...' : 'Save Changes'}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={saving}
+                        onClick={() => setDraft(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        className="more-button"
+                        onClick={() =>
+                          setOpenId(openId === product.id ? null : product.id)
+                        }
+                        aria-label={`More actions for ${product.name}`}
+                        aria-expanded={openId === product.id}
+                      >
+                        <MoreHorizontal />
+                      </button>
+
+                      {openId === product.id && (
+                        <div className="stock-menu">
+                          <button
+                            onClick={() => {
+                              onNotify(`${product.name} has ${product.stock} units available`)
+                              setOpenId(null)
+                            }}
+                          >
+                            View stock details
+                          </button>
+                          <button onClick={() => startEditing(product)}>
+                            Edit Stock
+                          </button>
+                          <button
+                            onClick={() => {
+                              setOpenId(null)
+                              onDelete(product.id)
+                            }}
+                          >
+                            Delete stock
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+
+      {!products.length && (
+        <div className="empty">
+          <Package />
+          <b>No products found</b>
+          <span>Adjust your search or add a new item.</span>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function Receipts({
@@ -1461,7 +1752,24 @@ function DebtDetail({
 
 
 function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
-  return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}><div className="modal"><div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'debt' ? 'Add customer debt' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div><form onSubmit={onSubmit}><label>{type === 'debt' ? 'Customer name' : 'Name or reference'}<input name={type === 'debt' ? 'customer' : 'name'} required placeholder={type === 'debt' ? 'e.g. Harbor Market' : 'e.g. Premium Rice 25kg'} /></label>{type === 'product' && <div className="form-row"><label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label><label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label><label>Price<input name="price" type="number" min="0" step="0.01" required /></label><label>Quantity<input name="stock" type="number" min="0" required /></label></div>}{type === 'debt' && <><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg" /></label><label>Amount<input name="amount" type="number" min="1" required /></label></>}{type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div></form></div></div>
+  return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}>
+    <div className="modal">
+      <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'debt' ? 'Add customer debt' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+      <form onSubmit={onSubmit}>
+        <label>{type === 'debt' ? 'Customer name' : 'Name or reference'}<input name={type === 'debt' ? 'customer' : 'name'} required placeholder={type === 'debt' ? 'e.g. Harbor Market' : 'e.g. Premium Rice 25kg'} /></label>
+        {type === 'product' && <div className="form-row">
+          <label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label>
+          <label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label>
+          <label>Barcode (optional)<input name="barcode" type="text" inputMode="text" autoComplete="off" maxLength={128} placeholder="Keep leading zeroes" /></label>
+          <label>Price<input name="price" type="number" min="0" step="0.01" required /></label>
+          <label>Quantity<input name="stock" type="number" min="0" required /></label>
+        </div>}
+        {type === 'debt' && <><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg" /></label><label>Amount<input name="amount" type="number" min="1" required /></label></>}
+        {type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div>
+      </form>
+    </div>
+  </div>
 }
 
 function SettingsPage({ settings, setSettings, onSave }: { settings: { workspace: string; currency: string; notifications: string; lowStockThreshold: string; dateFormat: string }; setSettings: React.Dispatch<React.SetStateAction<typeof settings>>; onSave: () => void }) {

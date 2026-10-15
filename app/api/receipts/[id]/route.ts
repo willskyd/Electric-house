@@ -60,7 +60,7 @@ export async function PATCH(
       );
     }
 
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const result = await db.collection(COLLECTION).updateOne(
@@ -106,7 +106,7 @@ export async function DELETE(
       );
     }
 
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const result = await db.collection(COLLECTION).deleteOne({

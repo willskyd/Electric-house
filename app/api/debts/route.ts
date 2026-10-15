@@ -7,7 +7,7 @@ const COLLECTION = "debts";
 // GET all debts
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const debts = await db
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const lastDebt = await db

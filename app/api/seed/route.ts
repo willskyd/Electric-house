@@ -58,7 +58,7 @@ const products = [
 
 export async function GET() {
   try {
-    const client = await clientPromise;
+    const client = await clientPromise();
     const db = client.db(DB_NAME);
 
     const existingProducts = await db
