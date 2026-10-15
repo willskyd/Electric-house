@@ -22,13 +22,44 @@ if [[ ! -f "$BRIDGE_DIR/printer-token.txt" ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y bluez rfkill iproute2
+if ! command -v bluetoothctl >/dev/null || ! command -v rfcomm >/dev/null ||
+   ! command -v sdptool >/dev/null || ! command -v rfkill >/dev/null ||
+   ! command -v ss >/dev/null; then
+  echo "Installing missing Bluetooth utilities without upgrading system packages..."
+  apt-get install -y --no-upgrade bluez rfkill iproute2
+fi
 
 NODE_BIN="$(runuser -u "$RUN_USER" -- bash -lc 'command -v node' 2>/dev/null | tail -n 1)"
 if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
   echo "Node.js is not installed for $RUN_USER. Install Node.js 20 or newer, then rerun this script." >&2
   exit 1
+fi
+
+DEFAULT_VERCEL_ORIGIN="https://micro-mec.vercel.app"
+read -r -p "Vercel production origin (HTTPS URL; Enter for $DEFAULT_VERCEL_ORIGIN): " VERCEL_ORIGINS
+VERCEL_ORIGINS="${VERCEL_ORIGINS:-$DEFAULT_VERCEL_ORIGIN}"
+if [[ -n "$VERCEL_ORIGINS" ]]; then
+  VERCEL_ORIGINS="$(MICRO_MEC_ALLOWED_ORIGINS="$VERCEL_ORIGINS" "$NODE_BIN" --input-type=module -e '
+    const values = process.env.MICRO_MEC_ALLOWED_ORIGINS.split(",").map((value) => value.trim());
+    const origins = [];
+    for (const value of values) {
+      try {
+        const url = new URL(value);
+        if (url.protocol !== "https:" || url.username || url.password ||
+            (url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) process.exit(1);
+        origins.push(url.origin);
+      } catch { process.exit(1); }
+    }
+    process.stdout.write([...new Set(origins)].join(","));
+  ')" || {
+    echo "Enter HTTPS site origins only, without a path, query, or fragment." >&2
+    exit 1
+  }
+  CONFIG_DIR="$RUN_HOME/.config/micro-mec"
+  install -d -o "$RUN_USER" -g "$RUN_USER" -m 0700 "$CONFIG_DIR"
+  printf 'MICRO_MEC_ALLOWED_ORIGINS=%s\n' "$(printf '%s' "$VERCEL_ORIGINS" | sed 's/, */,/g')" > "$CONFIG_DIR/printer-bridge.env"
+  chown "$RUN_USER:$RUN_USER" "$CONFIG_DIR/printer-bridge.env"
+  chmod 0600 "$CONFIG_DIR/printer-bridge.env"
 fi
 
 install -d -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$BRIDGE_DIR"
@@ -101,12 +132,14 @@ systemctl daemon-reload
 systemctl enable --now bluetooth.service
 systemctl enable --now micro-mec-printer-autoconnect.service
 systemctl enable --now micro-mec-printer-bridge.service
+systemctl restart micro-mec-printer-bridge.service
 
 echo
 echo "Local printer services installed and enabled."
 echo "Node: $NODE_BIN"
 echo "Bridge: $BRIDGE_DIR"
 echo "Bluetooth printer auto-connect: enabled at boot"
+if [[ -n "$VERCEL_ORIGINS" ]]; then echo "Vercel origin allowlist: configured"; fi
 echo
 systemctl --no-pager --full status micro-mec-printer-bridge.service | sed -n '1,12p'
 echo

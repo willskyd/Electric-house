@@ -31,8 +31,10 @@ function pair(label, value, width = 32) {
 
 export function formatReceipt(sale) {
   const lines = [
-    ...wrap(sale.businessName, 32), 'SALES RECEIPT',
-    ...wrap(`Receipt: ${sale.receiptNumber}`, 32), ...wrap(new Date(sale.createdAt).toLocaleString('en-GB'), 32),
+    '\x1ba\x01\x1bE\x01MicroMec\x1bE\x00',
+    `\x1bE\x01${ascii(sale.businessName)}\x1bE\x00`,
+    'SALES RECEIPT', '\x1ba\x00',
+    ...wrap(`Receipt no.: ${sale.receiptNumber}`, 32), ...wrap(`Date: ${new Date(sale.createdAt).toLocaleString('en-GB')}`, 32),
     '-'.repeat(32),
   ];
   for (const item of sale.items) {
@@ -45,7 +47,7 @@ export function formatReceipt(sale) {
   if (sale.discountMinor) lines.push(...pair('Discount', amount(sale.discountMinor, sale.currency)));
   if (sale.taxMinor) lines.push(...pair('Tax', amount(sale.taxMinor, sale.currency)));
   lines.push(...pair('TOTAL', amount(sale.totalMinor, sale.currency)), '-'.repeat(32));
-  lines.push(...wrap('Payment: Cash - Paid'), ...pair('Cash received', amount(sale.payment.amountTenderedMinor, sale.currency)));
-  lines.push(...pair('Change', amount(sale.payment.changeMinor, sale.currency)), '', ...wrap('Thank you for shopping with us.'), '', '', '');
+  lines.push(...wrap('Payment method: Cash - Paid'), ...pair('Amount received', amount(sale.payment.amountTenderedMinor, sale.currency)));
+  lines.push(...pair('Change', amount(sale.payment.changeMinor, sale.currency)), '', ...wrap('Thank you for your purchase.'), '', '', '');
   return Buffer.from(`\x1b@${lines.join('\n')}\n`, 'ascii');
 }

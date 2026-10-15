@@ -457,7 +457,7 @@ export function PosCart({
       console.error('Bluetooth receipt print failed:', error)
       setPrintStatus(`Sale ${sale.receiptNumber} is saved. The Bluetooth receipt was not confirmed.`)
       const reason = error instanceof TypeError
-        ? 'Could not reach the local printer bridge. Keep it running and allow this site to access the local network.'
+        ? 'Could not reach the local printer bridge. Start the MicroMec printer service and allow this site to access your local network in the browser if prompted.'
         : error instanceof Error ? error.message : 'Bluetooth printing failed.'
       setPrintError(`${reason} Retry the receipt or use the browser/PDF fallback.`)
     } finally {
@@ -581,7 +581,7 @@ export function PosCart({
       </div>
 
       {printRequest && <div className="receipt-print">
-        <header><h1>{printRequest.sale.businessName || workspace}</h1><p>Sales receipt</p></header>
+        <header><h1>MicroMec</h1><p className="receipt-business-name">{printRequest.sale.businessName || workspace}</p><p className="receipt-document-title">SALES RECEIPT</p></header>
         <div className="receipt-meta"><span>Receipt: {printRequest.sale.receiptNumber}</span><span>{formatSaleDate(printRequest.sale.createdAt)}</span></div>
         <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>
           {printRequest.sale.items.map((item) => <tr key={item.productId}><td>{item.name}<small>{item.sku}{item.barcode ? ` · ${item.barcode}` : ''}</small></td><td>{item.quantity}</td><td>{moneyMinor(item.unitPriceMinor, printRequest.sale.currency)}</td><td>{moneyMinor(item.lineTotalMinor, printRequest.sale.currency)}</td></tr>)}
@@ -590,8 +590,8 @@ export function PosCart({
         {printRequest.sale.discountMinor > 0 && <div className="receipt-total"><span>Discount</span><b>−{moneyMinor(printRequest.sale.discountMinor, printRequest.sale.currency)}</b></div>}
         {printRequest.sale.taxMinor > 0 && <div className="receipt-total"><span>Tax</span><b>{moneyMinor(printRequest.sale.taxMinor, printRequest.sale.currency)}</b></div>}
         <div className="receipt-total receipt-final-total"><span>Total</span><b>{moneyMinor(printRequest.sale.totalMinor, printRequest.sale.currency)}</b></div>
-        <div className="receipt-payment"><span>Payment: Cash — Paid</span><span>Cash received: {moneyMinor(printRequest.sale.payment.amountTenderedMinor, printRequest.sale.currency)}</span><span>Change: {moneyMinor(printRequest.sale.payment.changeMinor, printRequest.sale.currency)}</span></div>
-        <p className="receipt-thanks">Thank you for shopping with us.</p>
+        <div className="receipt-payment"><span><b>Payment method:</b> Cash · Paid</span><span><b>Amount received:</b> {moneyMinor(printRequest.sale.payment.amountTenderedMinor, printRequest.sale.currency)}</span><span><b>Change:</b> {moneyMinor(printRequest.sale.payment.changeMinor, printRequest.sale.currency)}</span></div>
+        <p className="receipt-thanks">Thank you for your purchase.</p>
       </div>}
     </section>}
   </>
