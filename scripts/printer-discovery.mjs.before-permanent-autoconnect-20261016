@@ -1,0 +1,124 @@
+import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+export function parseConnectedRfcomm(output) {
+  const printers = [];
+  const linePattern = /^rfcomm(\d+):\s+([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s+->\s+([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s+channel\s+(\d+)\s+connected\b/im;
+  for (const line of String(output).split(/\r?\n/)) {
+    const match = linePattern.exec(line);
+    if (!match) continue;
+    const number = Number(match[1]);
+    printers.push({
+      id: `rfcomm-${number}`,
+      device: `/dev/rfcomm${number}`,
+      localAddress: match[2].toUpperCase(),
+      address: match[3].toUpperCase(),
+      channel: Number(match[4]),
+    });
+  }
+  return printers.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+}
+
+export function chooseBluetoothPrinterCandidate(output) {
+  const lines = String(output || '').split(/\r?\n/);
+  let currentAddress = '';
+  let currentInfo = [];
+  let connectedMatch = '';
+  let fallbackMatch = '';
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const deviceMatch = /^Device\s+([0-9A-F:]{17})\b/i.exec(trimmed);
+    if (deviceMatch) {
+      if (currentAddress) {
+        const infoBlock = currentInfo.join('\n');
+        const isPrinter = /Icon:\s*printer\b/i.test(infoBlock);
+        const hasSerialPort = /UUID:\s*Serial Port\s*\(00001101-0000-1000-8000-00805f9b34fb\)/i.test(infoBlock);
+        // BlueZ versions and printer firmware disagree about which metadata
+        // fields they expose. A printer icon OR its Serial Port profile is
+        // enough to identify a paired ESC/POS candidate.
+        if (isPrinter || hasSerialPort) {
+          if (/Connected:\s*yes\b/i.test(infoBlock)) {
+            connectedMatch = currentAddress;
+            break;
+          }
+          if (!fallbackMatch) fallbackMatch = currentAddress;
+        }
+      }
+      currentAddress = deviceMatch[1].toUpperCase();
+      currentInfo = [trimmed];
+      continue;
+    }
+
+    if (currentAddress) currentInfo.push(trimmed);
+  }
+
+  if (!connectedMatch && currentAddress) {
+    const infoBlock = currentInfo.join('\n');
+    const isPrinter = /Icon:\s*printer\b/i.test(infoBlock);
+    const hasSerialPort = /UUID:\s*Serial Port\s*\(00001101-0000-1000-8000-00805f9b34fb\)/i.test(infoBlock);
+    if (isPrinter || hasSerialPort) {
+      if (/Connected:\s*yes\b/i.test(infoBlock)) {
+        connectedMatch = currentAddress;
+      } else if (!fallbackMatch) {
+        fallbackMatch = currentAddress;
+      }
+    }
+  }
+
+  return connectedMatch || fallbackMatch;
+}
+
+export async function discoverConnectedPrinters() {
+  const listUsablePrinters = async () => {
+    const { stdout } = await execFileAsync('rfcomm', ['-a'], { timeout: 3000, maxBuffer: 64 * 1024 }).catch(() => ({ stdout: '' }));
+    const connected = [];
+    for (const printer of parseConnectedRfcomm(stdout)) {
+      try {
+        const info = await fs.stat(printer.device);
+        if (!info.isCharacterDevice()) continue;
+        await fs.access(printer.device, constants.W_OK);
+        connected.push(printer);
+      } catch {
+        // Ignore stale RFCOMM entries and devices this user cannot write to.
+      }
+    }
+    return connected;
+  };
+
+  const alreadyConnected = await listUsablePrinters();
+  if (alreadyConnected.length > 0) return alreadyConnected;
+
+  try {
+    const { stdout: deviceList } = await execFileAsync('bluetoothctl', ['devices', 'Paired'], { timeout: 3000, maxBuffer: 64 * 1024 });
+    const addresses = [...deviceList.matchAll(/Device\s+([0-9A-F:]{17})\b/gi)].map((match) => match[1].toUpperCase());
+    for (const address of addresses) {
+      try {
+        const { stdout: info } = await execFileAsync('bluetoothctl', ['info', address], { timeout: 3000, maxBuffer: 64 * 1024 });
+        const candidate = chooseBluetoothPrinterCandidate(info);
+        if (!candidate || candidate !== address) continue;
+        try {
+          await execFileAsync('bluetoothctl', ['connect', address], { timeout: 10_000, maxBuffer: 64 * 1024 });
+        } catch {
+          // Printer may already be connected or the OS may reject the request.
+        }
+      } catch {
+        // Ignore unpaired or inaccessible devices.
+      }
+    }
+    // bluetoothctl connect can return before the RFCOMM tty is ready. Poll
+    // briefly so a just-reconnected printer is not reported as missing.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const printers = await listUsablePrinters();
+      if (printers.length > 0) return printers;
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}

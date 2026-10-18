@@ -1,4 +1,4 @@
-import { Bell, ChevronRight, Inbox, LogOut, Menu, Moon, Sun, Store } from 'lucide-react'
+import { ArrowLeftRight, Bell, Boxes, ChevronRight, Inbox, LogOut, Menu, Moon, Sun, Store } from 'lucide-react'
 
 import type { Activity, Section } from './types'
 
@@ -47,7 +47,7 @@ export function Topbar({
         <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex">
           <span>Workspace</span>
           <ChevronRight className="h-3.5 w-3.5" />
-          <b className="text-sm text-slate-900 dark:text-slate-100">{section}</b>
+          <b className="text-sm text-slate-900 dark:text-slate-100">{section === 'New Stocks' ? 'Stock' : section === 'Store' ? 'Store' : section}</b>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -141,6 +141,14 @@ export function Topbar({
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-100">AM</span>
               Profile
             </button> */}
+            <button type="button" aria-current={section === 'Store' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-600 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Store' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Store'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><Boxes className="h-4 w-4" /></span>
+              Store
+            </button>
+            <button type="button" aria-current={section === 'Transfers' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-600 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Transfers' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Transfers'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><ArrowLeftRight className="h-4 w-4" /></span>
+              Transfers
+            </button>
             <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => { onToggleMenu(); onOpenSection('Settings'); }}>
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-green-700 dark:text-slate-100">⚙</span>
               Settings

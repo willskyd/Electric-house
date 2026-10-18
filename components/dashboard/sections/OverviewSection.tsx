@@ -5,9 +5,13 @@ import type { Section } from '../types'
 
 export function OverviewSection({
   outstanding,
+  salesMinor,
+  currency,
   onGo,
 }: {
   outstanding: number
+  salesMinor: number | null
+  currency: string
   onGo: (s: Section) => void
 }) {
   return (
@@ -23,9 +27,10 @@ export function OverviewSection({
         </div>
       </div>
 
-      <div className="stat-grid">
+      <div className="stat-grid overview-stat-grid">
         <Stat icon={<Package />} label="Products tracked" value="1,248" change="12.5% this month" positive />
         <Stat icon={<CreditCard />} label="Outstanding debt" value={money(outstanding)} change="Across 2 customers" />
+        <Stat icon={<ShoppingCart />} label="Today’s sales" value={salesMinor === null ? '—' : money(salesMinor / 100, currency)} change="Completed receipts today" positive />
         <Stat icon={<ShoppingCart />} label="Stock received" value="318" change="This month" positive />
         <Stat icon={<Users />} label="Team members" value="6" change="2 active now" />
       </div>

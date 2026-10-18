@@ -14,13 +14,14 @@ test('formats saved sale fields into 32-column ESC/POS text without cutting', ()
   const text = formatReceipt(sale).toString('ascii');
   assert.equal(text.charCodeAt(0), 0x1b);
   assert.ok(text.startsWith(`${String.fromCharCode(0x1b)}@`));
-  assert.ok(text.includes(`${String.fromCharCode(0x1b)}a\x01${String.fromCharCode(0x1b)}E\x01MicroMec${String.fromCharCode(0x1b)}E\x00`), 'MicroMec heading should be centered and bold');
+  assert.ok(text.includes('\x1ba\x01\x1bE\x01\x1d!\x21MICROMEC\x1d!\x00\x1bE\x00'), 'MicroMec heading should be centered, bold, and enlarged');
+  assert.equal(text.split('MICROMEC').length - 1, 1, 'MicroMec brand should print once');
   for (const expected of ['R-1', 'SKU1 / 0123', 'NGN 123.45', 'NGN 246.90', 'NGN 247.90', 'NGN 300.00', 'NGN 52.10', 'Discount', 'Tax']) {
     assert.ok(text.includes(expected), `missing ${expected}`);
   }
   assert.ok(text.includes('A long item name'));
   assert.ok(!text.includes(`${String.fromCharCode(0x1d)}V`), 'receipt must not issue a cut command');
-  const printable = text.slice(2).replace(/\x1b[@aE]./g, '').split('\n');
+  const printable = text.slice(2).replace(/\x1b[@aE].|\x1d!./g, '').split('\n');
   for (const line of printable) assert.ok(line.length <= 32, `line exceeds 32 columns: ${line}`);
 });
 

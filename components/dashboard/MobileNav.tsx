@@ -35,7 +35,7 @@ export function MobileNav({
       icon: GiMoneyStack,
     },
     {
-      label: 'New Stock',
+      label: 'Stock',
       section: 'New Stocks',
       icon: FiPlusCircle,
     },

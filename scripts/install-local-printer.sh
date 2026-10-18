@@ -6,6 +6,8 @@ PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 RUN_USER="${SUDO_USER:-$(stat -c '%U' "$PROJECT_DIR")}"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 BRIDGE_DIR="$RUN_HOME/micro-mec-printer"
+CONFIG_DIR="$RUN_HOME/.config/micro-mec"
+BRIDGE_ENV_FILE="$CONFIG_DIR/printer-bridge.env"
 
 if [[ $EUID -ne 0 ]]; then
   exec sudo -- bash "$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")" "$@"
@@ -34,6 +36,22 @@ if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
   echo "Node.js is not installed for $RUN_USER. Install Node.js 20 or newer, then rerun this script." >&2
   exit 1
 fi
+if ! command -v systemd-escape >/dev/null; then
+  echo "systemd-escape is required to safely quote service paths." >&2
+  exit 1
+fi
+
+# Unit-file path values use systemd's C-style escaping, not shell quotes.
+systemd_escape_unit_path() {
+  local value=${1//\\/\\\\}
+  value=${value// /\\x20}
+  value=${value//%/%%}
+  printf '%s' "$value"
+}
+BRIDGE_DIR_UNIT="$(systemd_escape_unit_path "$BRIDGE_DIR")"
+BRIDGE_ENV_FILE_UNIT="$(systemd_escape_unit_path "$BRIDGE_ENV_FILE")"
+NODE_BIN_UNIT="$(systemd_escape_unit_path "$NODE_BIN")"
+BRIDGE_SCRIPT_UNIT="$(systemd_escape_unit_path "$BRIDGE_DIR/printer-bridge.mjs")"
 
 DEFAULT_VERCEL_ORIGIN="https://micro-mec.vercel.app"
 read -r -p "Vercel production origin (HTTPS URL; Enter for $DEFAULT_VERCEL_ORIGIN): " VERCEL_ORIGINS
@@ -55,14 +73,23 @@ if [[ -n "$VERCEL_ORIGINS" ]]; then
     echo "Enter HTTPS site origins only, without a path, query, or fragment." >&2
     exit 1
   }
-  CONFIG_DIR="$RUN_HOME/.config/micro-mec"
-  install -d -o "$RUN_USER" -g "$RUN_USER" -m 0700 "$CONFIG_DIR"
-  printf 'MICRO_MEC_ALLOWED_ORIGINS=%s\n' "$(printf '%s' "$VERCEL_ORIGINS" | sed 's/, */,/g')" > "$CONFIG_DIR/printer-bridge.env"
-  chown "$RUN_USER:$RUN_USER" "$CONFIG_DIR/printer-bridge.env"
-  chmod 0600 "$CONFIG_DIR/printer-bridge.env"
 fi
 
+install -d -o "$RUN_USER" -g "$RUN_USER" -m 0700 "$CONFIG_DIR"
+if [[ -f "$BRIDGE_ENV_FILE" ]]; then
+  cp -a -- "$BRIDGE_ENV_FILE" "$BRIDGE_ENV_FILE.before-install-$(date +%Y%m%d%H%M%S)"
+fi
+printf 'MICRO_MEC_ALLOWED_ORIGINS=%s\nMICRO_MEC_PRINTER_TOKEN_FILE=%s\n' \
+  "$(printf '%s' "$VERCEL_ORIGINS" | sed 's/, */,/g')" "$BRIDGE_DIR/printer-token.txt" > "$BRIDGE_ENV_FILE"
+chown "$RUN_USER:$RUN_USER" "$BRIDGE_ENV_FILE"
+chmod 0600 "$BRIDGE_ENV_FILE"
+
 install -d -o "$RUN_USER" -g "$RUN_USER" -m 0755 "$BRIDGE_DIR"
+for file in printer-bridge.mjs printer-discovery.mjs receipt-format.mjs; do
+  if [[ -f "$BRIDGE_DIR/$file" ]]; then
+    cp -a -- "$BRIDGE_DIR/$file" "$BRIDGE_DIR/$file.before-install-$(date +%Y%m%d%H%M%S)"
+  fi
+done
 install -o "$RUN_USER" -g "$RUN_USER" -m 0644 "$SCRIPT_DIR/printer-bridge.mjs" "$BRIDGE_DIR/printer-bridge.mjs"
 install -o "$RUN_USER" -g "$RUN_USER" -m 0644 "$SCRIPT_DIR/printer-discovery.mjs" "$BRIDGE_DIR/printer-discovery.mjs"
 install -o "$RUN_USER" -g "$RUN_USER" -m 0644 "$SCRIPT_DIR/receipt-format.mjs" "$BRIDGE_DIR/receipt-format.mjs"
@@ -90,6 +117,13 @@ done
 install -d -m 0755 /usr/local/libexec
 install -o root -g root -m 0755 "$SCRIPT_DIR/bluetooth-printer-autoconnect.sh" /usr/local/libexec/micro-mec-printer-autoconnect.sh
 
+# Preserve existing service definitions before replacing them.
+for unit in /etc/systemd/system/micro-mec-printer-autoconnect.service /etc/systemd/system/micro-mec-printer-bridge.service; do
+  if [[ -f "$unit" ]]; then
+    cp -a -- "$unit" "$unit.before-install-$(date +%Y%m%d%H%M%S)"
+  fi
+done
+
 cat > /etc/systemd/system/micro-mec-printer-autoconnect.service <<'UNIT'
 [Unit]
 Description=Automatically connect a paired Bluetooth ESC/POS printer
@@ -115,12 +149,12 @@ Wants=bluetooth.service micro-mec-printer-autoconnect.service
 [Service]
 Type=simple
 User=$RUN_USER
-Group=dialout
-WorkingDirectory=$BRIDGE_DIR
-ExecStart=$NODE_BIN $BRIDGE_DIR/printer-bridge.mjs
+SupplementaryGroups=dialout
+WorkingDirectory=$BRIDGE_DIR_UNIT
+ExecStart="$NODE_BIN_UNIT" "$BRIDGE_SCRIPT_UNIT"
 Restart=on-failure
 RestartSec=3
-EnvironmentFile=-$RUN_HOME/.config/micro-mec/printer-bridge.env
+EnvironmentFile=-$BRIDGE_ENV_FILE_UNIT
 NoNewPrivileges=true
 PrivateTmp=true
 
@@ -128,9 +162,13 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 
+systemd-analyze verify \
+  /etc/systemd/system/micro-mec-printer-autoconnect.service \
+  /etc/systemd/system/micro-mec-printer-bridge.service
 systemctl daemon-reload
 systemctl enable --now bluetooth.service
 systemctl enable --now micro-mec-printer-autoconnect.service
+systemctl restart micro-mec-printer-autoconnect.service
 systemctl enable --now micro-mec-printer-bridge.service
 systemctl restart micro-mec-printer-bridge.service
 
@@ -141,7 +179,19 @@ echo "Bridge: $BRIDGE_DIR"
 echo "Bluetooth printer auto-connect: enabled at boot"
 if [[ -n "$VERCEL_ORIGINS" ]]; then echo "Vercel origin allowlist: configured"; fi
 echo
-systemctl --no-pager --full status micro-mec-printer-bridge.service | sed -n '1,12p'
+systemctl --no-pager --full status micro-mec-printer-autoconnect.service micro-mec-printer-bridge.service | sed -n '1,34p'
 echo
-curl --fail --silent http://127.0.0.1:17891/health || true
+echo "Waiting up to 30 seconds for the RFCOMM printer connection..."
+health_response=''
+for _ in {1..15}; do
+  health_response="$(curl --fail --silent --max-time 3 http://127.0.0.1:17891/health 2>/dev/null || true)"
+  [[ "$health_response" == *'"status":"ready"'* ]] && break
+  sleep 2
+done
+printf '%s\n' "${health_response:-Printer bridge health endpoint did not respond.}"
+if [[ "$health_response" != *'"status":"ready"'* ]]; then
+  echo
+  echo "Auto-connect service log (latest 20 lines):"
+  journalctl -u micro-mec-printer-autoconnect.service -n 20 --no-pager || true
+fi
 echo

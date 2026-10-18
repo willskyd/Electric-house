@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ClientSession, Document } from "mongodb";
 import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
+import { ensureCollections, MOVEMENT_COLLECTION, recordStockMovement } from "@/lib/inventory";
 
 const DB_NAME = "Dashboard";
 const SALES_COLLECTION = "sales";
@@ -39,10 +40,6 @@ function publicSale(sale: SaleDocument) {
 
 function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === 11000;
-}
-
-function isNamespaceExistsError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === 48;
 }
 
 function isTransactionUnavailable(error: unknown): boolean {
@@ -97,16 +94,70 @@ export async function GET(request: Request) {
   try {
     const client = await clientPromise();
     const db = client.db(DB_NAME);
-    const limitParam = new URL(request.url).searchParams.get("limit");
+    const url = new URL(request.url);
+    const params = url.searchParams;
+    const limitParam = params.get("limit");
     const requestedLimit = limitParam ? Number(limitParam) : 20;
     const limit = Number.isInteger(requestedLimit) ? Math.min(50, Math.max(1, requestedLimit)) : 20;
-    const sales = await db.collection<SaleDocument>(SALES_COLLECTION)
-      .find({}, { projection: { requestHash: 0 } })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .toArray();
-
-    return NextResponse.json(sales.map(publicSale));
+    const clauses: Document[] = [
+      { cancelled: { $ne: true } },
+      { status: { $not: /^(cancelled|void|refunded)$/i } },
+      { "payment.status": { $not: /^(cancelled|void|refunded)$/i } },
+    ];
+    const from = params.get("from");
+    const to = params.get("to");
+    if (from) {
+      const fromDate = new Date(from);
+      if (Number.isNaN(fromDate.getTime())) return NextResponse.json({ message: "Invalid start date" }, { status: 400 });
+      clauses.push({ createdAt: { $gte: fromDate } });
+    }
+    if (to) {
+      const toDate = new Date(to);
+      if (Number.isNaN(toDate.getTime())) return NextResponse.json({ message: "Invalid end date" }, { status: 400 });
+      clauses.push({ createdAt: { $lt: toDate } });
+    }
+    const search = params.get("q")?.trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      clauses.push({ receiptNumber: { $regex: escaped, $options: "i" } });
+    }
+    const excludedIds = (params.get("exclude") ?? "").split(",").filter((id) => /^[0-9a-f-]{36}$/i.test(id)).slice(0, 20);
+    if (excludedIds.length) clauses.push({ _id: { $nin: excludedIds } });
+    const match = { $and: clauses };
+    const cursor = params.get("cursor");
+    let cursorFilter: Document | null = null;
+    if (cursor) {
+      try {
+        const [dateValue, idValue] = Buffer.from(cursor, "base64url").toString("utf8").split("|", 2);
+        const date = new Date(dateValue);
+        if (!idValue || Number.isNaN(date.getTime())) throw new Error("Bad cursor");
+        cursorFilter = { $and: [match, { $or: [{ createdAt: { $lt: date } }, { createdAt: date, _id: { $lt: idValue } }] }] };
+      } catch {
+        return NextResponse.json({ message: "Sales page cursor is invalid" }, { status: 400 });
+      }
+    }
+    const collection = db.collection<SaleDocument>(SALES_COLLECTION);
+    const [rows, total, aggregate] = await Promise.all([
+      collection.find(cursorFilter ?? match, { projection: { requestHash: 0 } })
+        .sort({ createdAt: -1, _id: -1 }).limit(params.get("paged") === "1" ? limit + 1 : limit).toArray(),
+      collection.countDocuments(match),
+      collection.aggregate<{ totalMinor: number; unitsSold: number }>([
+        { $match: match },
+        { $group: { _id: null, totalMinor: { $sum: "$totalMinor" }, unitsSold: { $sum: { $reduce: { input: { $ifNull: ["$items", []] }, initialValue: 0, in: { $add: ["$$value", { $ifNull: ["$$this.quantity", 0] }] } } } } } },
+      ]).toArray(),
+    ]);
+    const hasMore = params.get("paged") === "1" && rows.length > limit;
+    const sales = rows.slice(0, limit);
+    if (params.get("paged") !== "1") return NextResponse.json(sales.map(publicSale));
+    const last = sales.at(-1);
+    const nextCursor = hasMore && last ? Buffer.from(`${new Date(last.createdAt).toISOString()}|${last._id}`).toString("base64url") : null;
+    return NextResponse.json({
+      sales: sales.map(publicSale),
+      total,
+      hasMore,
+      nextCursor,
+      summary: { saleCount: total, totalMinor: aggregate[0]?.totalMinor ?? 0, unitsSold: aggregate[0]?.unitsSold ?? 0 },
+    });
   } catch (error) {
     console.error("Failed to load POS sales:", error);
     return NextResponse.json({ message: "Sales history is unavailable" }, { status: 500 });
@@ -139,11 +190,7 @@ export async function POST(request: Request) {
 
     const client = await clientPromise();
     const db = client.db(DB_NAME);
-    try {
-      await db.createCollection(SALES_COLLECTION);
-    } catch (error) {
-      if (!isNamespaceExistsError(error)) throw error;
-    }
+    await ensureCollections(db, [SALES_COLLECTION, MOVEMENT_COLLECTION]);
     const products = db.collection<ProductDocument>("products");
     const sales = db.collection<SaleDocument>(SALES_COLLECTION);
     const session: ClientSession = client.startSession();
@@ -207,6 +254,7 @@ export async function POST(request: Request) {
           throw new CheckoutError("Cash received is less than the amount due", 400);
         }
 
+        const createdAt = new Date();
         for (const item of items) {
           const product = byId.get(item.productId);
           if (!product) throw new CheckoutError("A cart product no longer exists in inventory", 409);
@@ -224,9 +272,17 @@ export async function POST(request: Request) {
           if (updated.matchedCount !== 1) {
             throw new CheckoutError(`Stock changed during checkout for ${product.name}. Please review the cart`, 409);
           }
+          await recordStockMovement(db, session, {
+            id: `sale:${idempotencyKey}:${item.productId}`,
+            productId: item.productId,
+            delta: -item.quantity,
+            type: "sale",
+            sourceId: idempotencyKey,
+            at: createdAt,
+            description: `Sold ${item.quantity} units on receipt ${idempotencyKey}`,
+          });
         }
 
-        const createdAt = new Date();
         const workspace = typeof settings?.workspace === "string" && settings.workspace.trim()
           ? settings.workspace.trim()
           : "Micro-mec";

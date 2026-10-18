@@ -4,6 +4,8 @@ export const nav = [
   { label: 'Overview', icon: 'overview' },
   { label: 'Stocks', icon: 'stocks' },
   { label: 'New Stocks', icon: 'new-stocks' },
+  { label: 'Store', icon: 'store' },
+  { label: 'Transfers', icon: 'transfers' },
   { label: 'Debt', icon: 'debt' },
   { label: 'Paid', icon: 'paid' },
 ] as const

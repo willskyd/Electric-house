@@ -4,15 +4,21 @@ import { NextResponse } from "next/server";
 const DB_NAME = "Dashboard";
 const COLLECTION = "debts";
 
+function debtSelector(value: string): { id: number | string } | null {
+  const numericId = Number(value);
+  if (Number.isSafeInteger(numericId) && numericId > 0) return { id: numericId };
+  return value.trim() ? { id: value } : null;
+}
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const debtId = Number(id);
+    const selector = debtSelector(id);
 
-    if (!Number.isFinite(debtId)) {
+    if (!selector) {
       return NextResponse.json(
         { message: "Invalid debt ID" },
         { status: 400 }
@@ -55,7 +61,7 @@ export async function PATCH(
     const db = client.db(DB_NAME);
 
     const result = await db.collection(COLLECTION).updateOne(
-      { id: debtId },
+      selector,
       { $set: updates }
     );
 
@@ -67,7 +73,7 @@ export async function PATCH(
     }
 
     const updatedDebt = await db.collection(COLLECTION).findOne({
-      id: debtId,
+      ...selector,
     });
 
     return NextResponse.json(updatedDebt);
@@ -87,9 +93,9 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const debtId = Number(id);
+    const selector = debtSelector(id);
 
-    if (!Number.isFinite(debtId)) {
+    if (!selector) {
       return NextResponse.json(
         { message: "Invalid debt ID" },
         { status: 400 }
@@ -100,7 +106,7 @@ export async function DELETE(
     const db = client.db(DB_NAME);
 
     const result = await db.collection(COLLECTION).deleteOne({
-      id: debtId,
+      ...selector,
     });
 
     if (result.deletedCount === 0) {

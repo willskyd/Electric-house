@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Barcode, Check, FileDown, Minus, Plus, Printer, Search, ShoppingCart, Trash2, X } from 'lucide-react'
+import { Barcode, CalendarDays, Check, FileDown, Minus, Plus, Printer, Search, ShoppingCart, Trash2, X } from 'lucide-react'
 
 import type { Product, Sale } from './types'
 import { money } from './utils'
@@ -56,6 +56,48 @@ function isSaleList(value: unknown): value is Sale[] {
   return Array.isArray(value) && value.every(isSale)
 }
 
+type SalesPage = { sales: Sale[]; total: number; hasMore: boolean; nextCursor: string | null; summary: { saleCount: number; totalMinor: number; unitsSold: number } }
+
+function isSalesPage(value: unknown): value is SalesPage {
+  return typeof value === 'object' && value !== null && 'sales' in value && isSaleList(value.sales) &&
+    'total' in value && typeof value.total === 'number' && 'hasMore' in value && typeof value.hasMore === 'boolean' &&
+    'nextCursor' in value && (typeof value.nextCursor === 'string' || value.nextCursor === null) &&
+    'summary' in value && typeof value.summary === 'object' && value.summary !== null &&
+    'saleCount' in value.summary && typeof value.summary.saleCount === 'number' &&
+    'totalMinor' in value.summary && typeof value.summary.totalMinor === 'number' &&
+    'unitsSold' in value.summary && typeof value.summary.unitsSold === 'number'
+}
+
+type SalesPreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'last-month' | 'custom'
+
+function localMidnight(value: Date) { return new Date(value.getFullYear(), value.getMonth(), value.getDate()) }
+
+function salesRange(preset: SalesPreset, customFrom: string, customTo: string): { from: Date | null; to: Date | null } | null {
+  const today = localMidnight(new Date())
+  const nextDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1)
+  if (preset === 'custom') {
+    const parse = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+      const [year, month, day] = value.split('-').map(Number)
+      const date = new Date(year, month - 1, day)
+      return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null
+    }
+    const from = customFrom ? parse(customFrom) : null
+    const toDay = customTo ? parse(customTo) : null
+    if ((customFrom && !from) || (customTo && !toDay) || (from && toDay && from > toDay)) return null
+    return { from, to: toDay ? nextDay(toDay) : null }
+  }
+  if (preset === 'today') return { from: today, to: nextDay(today) }
+  if (preset === 'yesterday') { const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1); return { from: start, to: today } }
+  const weekday = (today.getDay() + 6) % 7
+  const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - weekday)
+  if (preset === 'this-week') return { from: weekStart, to: nextDay(today) }
+  if (preset === 'last-week') return { from: new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() - 7), to: weekStart }
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+  if (preset === 'this-month') return { from: monthStart, to: nextDay(today) }
+  return { from: new Date(today.getFullYear(), today.getMonth() - 1, 1), to: monthStart }
+}
+
 export function PosCart({
   active,
   products,
@@ -88,8 +130,22 @@ export function PosCart({
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const checkoutLock = useRef(false)
   const [recentSales, setRecentSales] = useState<Sale[]>([])
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState('')
+  const [recentLoading, setRecentLoading] = useState(false)
+  const [recentError, setRecentError] = useState('')
+  const [recentQuery, setRecentQuery] = useState('')
+  const [salesPreset, setSalesPreset] = useState<SalesPreset>('today')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+  const [periodSummary, setPeriodSummary] = useState<SalesPage['summary']>({ saleCount: 0, totalMinor: 0, unitsSold: 0 })
+  const [periodLoading, setPeriodLoading] = useState(false)
+  const [periodError, setPeriodError] = useState('')
+  const [salesRefresh, setSalesRefresh] = useState(0)
+  const [archiveSales, setArchiveSales] = useState<Sale[]>([])
+  const [archiveSearch, setArchiveSearch] = useState('')
+  const [archiveCursor, setArchiveCursor] = useState<string | null>(null)
+  const [archiveHasMore, setArchiveHasMore] = useState(false)
+  const [archiveLoading, setArchiveLoading] = useState(false)
+  const [archiveError, setArchiveError] = useState('')
   const [lastSale, setLastSale] = useState<Sale | null>(null)
   const [printRequest, setPrintRequest] = useState<PrintRequest | null>(null)
   const [printError, setPrintError] = useState('')
@@ -99,6 +155,7 @@ export function PosCart({
   const lastScanRef = useRef({ code: '', time: 0 })
   const printTokenRef = useRef(0)
   const printLock = useRef(false)
+  const archiveRequestRef = useRef(0)
 
   const updateCart = useCallback((update: (lines: CartLine[]) => CartLine[]) => {
     const next = update(cartRef.current)
@@ -121,26 +178,84 @@ export function PosCart({
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0)
   const pending = pendingCheckout !== null
   const cartLocked = pending || checkoutLoading
+  const selectedRange = useMemo(() => salesRange(salesPreset, customFrom, customTo), [salesPreset, customFrom, customTo])
+  const normalizedReceiptQuery = recentQuery.trim().toLocaleLowerCase()
+  const matchingRecentSales = recentSales.filter((sale) => sale.receiptNumber.toLocaleLowerCase().includes(normalizedReceiptQuery))
+  const recentSaleIds = new Set(recentSales.map((sale) => sale.id))
+  const visibleArchiveSales = archiveSearch === recentQuery ? archiveSales.filter((sale) => !recentSaleIds.has(sale.id)) : []
+  const visibleReceipts = [...matchingRecentSales, ...visibleArchiveSales]
+
+  useEffect(() => {
+    if (!active) return
+    if (!selectedRange) { setPeriodLoading(false); setPeriodError('Enter a valid custom date range.'); setPeriodSummary({ saleCount: 0, totalMinor: 0, unitsSold: 0 }); return }
+    const params = new URLSearchParams({ paged: '1', limit: '10' })
+    if (selectedRange.from) params.set('from', selectedRange.from.toISOString())
+    if (selectedRange.to) params.set('to', selectedRange.to.toISOString())
+    let cancelled = false
+    setPeriodLoading(true); setPeriodError('')
+    fetch(`/api/sales?${params.toString()}`, { cache: 'no-store' })
+      .then(async (response) => {
+        const result: unknown = await response.json().catch(() => null)
+        if (!response.ok || !isSalesPage(result)) throw new Error(typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Sales summary is unavailable')
+        if (!cancelled) setPeriodSummary(result.summary)
+      })
+      .catch((error: unknown) => { if (!cancelled) setPeriodError(error instanceof Error ? error.message : 'Sales summary is unavailable') })
+      .finally(() => { if (!cancelled) setPeriodLoading(false) })
+    return () => { cancelled = true }
+  }, [active, selectedRange, salesRefresh])
+
+  const loadArchivePage = useCallback(async (cursor: string | null) => {
+    const requestId = ++archiveRequestRef.current
+    setArchiveLoading(true); setArchiveError('')
+    const params = new URLSearchParams({ paged: '1', limit: '50' })
+    if (recentQuery.trim()) params.set('q', recentQuery.trim())
+    if (cursor) params.set('cursor', cursor)
+    try {
+      const response = await fetch(`/api/sales?${params.toString()}`, { cache: 'no-store' })
+      const result: unknown = await response.json().catch(() => null)
+      if (!response.ok || !isSalesPage(result)) throw new Error(typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Receipt history is unavailable')
+      if (requestId === archiveRequestRef.current) {
+        setArchiveSales((current) => cursor ? [...current, ...result.sales.filter((sale) => !current.some((item) => item.id === sale.id))] : result.sales)
+        setArchiveSearch(recentQuery)
+        setArchiveCursor(result.nextCursor)
+        setArchiveHasMore(result.hasMore)
+      }
+    } catch (error) {
+      if (requestId === archiveRequestRef.current) setArchiveError(error instanceof Error ? error.message : 'Receipt history is unavailable')
+    } finally {
+      if (requestId === archiveRequestRef.current) setArchiveLoading(false)
+    }
+  }, [recentQuery])
+
+  useEffect(() => {
+    if (!active) return
+    setArchiveSales([])
+    setArchiveSearch(recentQuery)
+    setArchiveCursor(null)
+    setArchiveHasMore(false)
+    const timer = window.setTimeout(() => { void loadArchivePage(null) }, 250)
+    return () => window.clearTimeout(timer)
+  }, [active, recentQuery, salesRefresh, loadArchivePage])
 
   useEffect(() => {
     if (!active) return
     let cancelled = false
-    setHistoryLoading(true)
-    setHistoryError('')
-    fetch('/api/sales?limit=8')
+    setRecentLoading(true)
+    setRecentError('')
+    fetch('/api/sales?limit=10&paged=1', { cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error('Saved sales history is unavailable')
         const result: unknown = await response.json()
-        if (!isSaleList(result)) throw new Error('Saved sales history returned invalid data')
-        if (!cancelled) setRecentSales(result)
+        if (!isSalesPage(result)) throw new Error('Saved sales history returned invalid data')
+        if (!cancelled) setRecentSales(result.sales)
       })
       .catch((error: unknown) => {
         console.error('Failed to load saved sales:', error)
-        if (!cancelled) setHistoryError(error instanceof Error ? error.message : 'Saved sales history is unavailable')
+        if (!cancelled) setRecentError(error instanceof Error ? error.message : 'Saved sales history is unavailable')
       })
-      .finally(() => { if (!cancelled) setHistoryLoading(false) })
+      .finally(() => { if (!cancelled) setRecentLoading(false) })
     return () => { cancelled = true }
-  }, [active])
+  }, [active, salesRefresh])
 
   useEffect(() => {
     if (!active || productsLoading || productsError || cartLocked) return
@@ -294,7 +409,8 @@ export function PosCart({
     setCashTendered('')
     setPending(null)
     setLastSale(sale)
-    setRecentSales((sales) => [sale, ...sales.filter((item) => item.id !== sale.id)].slice(0, 8))
+    setRecentSales((sales) => [sale, ...sales.filter((item) => item.id !== sale.id)].slice(0, 10))
+    setSalesRefresh((value) => value + 1)
     setMessage(`Sale ${sale.receiptNumber} saved.`)
     void printSale(sale)
     try {
@@ -436,23 +552,37 @@ export function PosCart({
     setPrinting(true)
     setPrintError('')
     setPrintStatus(`Sale ${sale.receiptNumber} saved. Sending receipt to the Bluetooth printer…`)
+    const requestId = crypto.randomUUID()
+    let lastError: unknown
     try {
       const base = 'http://127.0.0.1:17891'
-      const grantResponse = await fetch(`${base}/authorize`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-        signal: AbortSignal.timeout(5000),
-      })
-      const grant = await grantResponse.json().catch(() => null)
-      if (!grantResponse.ok || typeof grant?.authorization !== 'string') {
-        throw new Error(typeof grant?.error === 'string' ? grant.error : 'Local printer authorization failed')
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const grantResponse = await fetch(`${base}/authorize`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            signal: AbortSignal.timeout(5000),
+          })
+          const grant = await grantResponse.json().catch(() => null)
+          if (!grantResponse.ok || typeof grant?.authorization !== 'string') {
+            throw new Error(typeof grant?.error === 'string' ? grant.error : 'Local printer authorization failed')
+          }
+          const response = await fetch(`${base}/print-receipt`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.authorization}`, 'Idempotency-Key': requestId },
+            body: JSON.stringify(sale), signal: AbortSignal.timeout(15000),
+          })
+          const result = await response.json().catch(() => null)
+          if (!response.ok) throw new Error(typeof result?.error === 'string' ? result.error : 'Printer rejected the receipt')
+          setPrintStatus(`Receipt ${sale.receiptNumber} sent to ${typeof result.printer === 'string' ? result.printer : 'the Bluetooth printer'}.`)
+          return
+        } catch (error) {
+          lastError = error
+          if (attempt < 3) {
+            setPrintStatus(`Printer connection interrupted. Reconnecting and retrying (${attempt}/2)…`)
+            await new Promise((resolve) => window.setTimeout(resolve, 1500))
+          }
+        }
       }
-      const response = await fetch(`${base}/print-receipt`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.authorization}`, 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify(sale), signal: AbortSignal.timeout(15000),
-      })
-      const result = await response.json().catch(() => null)
-      if (!response.ok) throw new Error(typeof result?.error === 'string' ? result.error : 'Printer rejected the receipt')
-      setPrintStatus(`Receipt ${sale.receiptNumber} sent to ${typeof result.printer === 'string' ? result.printer : 'the Bluetooth printer'}.`)
+      throw lastError
     } catch (error) {
       console.error('Bluetooth receipt print failed:', error)
       setPrintStatus(`Sale ${sale.receiptNumber} is saved. The Bluetooth receipt was not confirmed.`)
@@ -569,19 +699,31 @@ export function PosCart({
             {pending && !checkoutLoading && <small className="pos-pending-note">The previous request could not be confirmed. Retry it before changing the cart.</small>}
           </section>
 
+          <section className="panel pos-todays-sales" aria-labelledby="todays-sales-title">
+            <div className="pos-panel-heading"><div><h3 id="todays-sales-title">Today’s Sales</h3><span>Summary for the selected date range</span></div></div>
+            <SalesRangeControls preset={salesPreset} setPreset={setSalesPreset} customFrom={customFrom} setCustomFrom={setCustomFrom} customTo={customTo} setCustomTo={setCustomTo} />
+            <div className="pos-sales-metrics"><div><span>Completed sales</span><b>{periodSummary.saleCount.toLocaleString()}</b></div><div><span>Sales value</span><b>{moneyMinor(periodSummary.totalMinor, currency)}</b></div><div><span>Units sold</span><b>{periodSummary.unitsSold.toLocaleString(undefined, { maximumFractionDigits: 3 })}</b></div></div>
+            {periodLoading && <p className="pos-history-footnote" role="status">Updating sales summary…</p>}
+            {periodError && <p className="pos-error pos-history-footnote" role="alert">{periodError}</p>}
+          </section>
+
           <section className="panel pos-recent-sales">
-            <div className="pos-panel-heading"><div><h3>Recent sales</h3><span>Saved receipts can be printed again</span></div></div>
-            {historyLoading ? <p className="pos-history-empty">Loading sales…</p> : historyError ? <p className="pos-error pos-history-empty">{historyError}</p> : recentSales.length === 0 ? <p className="pos-history-empty">Completed sales will appear here.</p> : recentSales.map((sale) => <div className="pos-history-row" key={sale.id}>
-              <div><b>{sale.receiptNumber}</b><small>{formatSaleDate(sale.createdAt)}</small><strong>{moneyMinor(sale.totalMinor, sale.currency)}</strong></div>
-              <button className="pos-icon-action" type="button" onClick={() => void printSale(sale)} disabled={printing} aria-label={`Reprint receipt ${sale.receiptNumber} on Bluetooth printer`}><Printer /></button>
-              <button className="pos-icon-action" type="button" onClick={() => openReceipt(sale)} aria-label={`Open browser / PDF printing for receipt ${sale.receiptNumber}`}><FileDown /></button>
-            </div>)}
+            <div className="pos-panel-heading pos-receipts-heading"><div><h3>Recent receipts</h3><span>All saved sales · newest first</span></div><label className="pos-recent-search"><Search size={14} /><input value={recentQuery} onChange={(event) => setRecentQuery(event.target.value)} placeholder="Receipt no." aria-label="Search receipts by receipt number" /><span className="pos-visually-hidden">Search receipts by receipt number</span></label></div>
+            <div className="pos-receipts-scroll" aria-live="polite">
+              {recentLoading && recentSales.length === 0 && <p className="pos-history-empty">Loading receipts…</p>}
+              {recentError && <p className="pos-error pos-history-empty" role="alert">{recentError}</p>}
+              {visibleReceipts.map((sale) => <SaleHistoryRow key={sale.id} sale={sale} currency={currency} printing={printing} onReprint={() => void printSale(sale)} onOpen={() => openReceipt(sale)} />)}
+              {archiveLoading && <p className="pos-history-empty" role="status">Loading receipts…</p>}
+              {archiveError && <p className="pos-error pos-history-empty" role="alert">{archiveError}</p>}
+              {!recentLoading && !archiveLoading && visibleReceipts.length === 0 && <p className="pos-history-empty">{normalizedReceiptQuery ? 'No receipts match that number.' : 'Completed receipts will appear here.'}</p>}
+              {archiveHasMore && archiveSearch === recentQuery && <div className="pos-history-load-more"><button type="button" className="secondary-button" onClick={() => void loadArchivePage(archiveCursor)} disabled={archiveLoading}>{archiveLoading ? 'Loading…' : 'Load older receipts'}</button></div>}
+            </div>
           </section>
         </aside>
       </div>
 
       {printRequest && <div className="receipt-print">
-        <header><h1>MicroMec</h1><p className="receipt-business-name">{printRequest.sale.businessName || workspace}</p><p className="receipt-document-title">SALES RECEIPT</p></header>
+        <header><h1>MICROMEC</h1>{(printRequest.sale.businessName || workspace).replace(/[^a-z0-9]/gi, '').toLowerCase() !== 'micromec' && <p className="receipt-business-name">{printRequest.sale.businessName || workspace}</p>}<p className="receipt-document-title">SALES RECEIPT</p></header>
         <div className="receipt-meta"><span>Receipt: {printRequest.sale.receiptNumber}</span><span>{formatSaleDate(printRequest.sale.createdAt)}</span></div>
         <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>
           {printRequest.sale.items.map((item) => <tr key={item.productId}><td>{item.name}<small>{item.sku}{item.barcode ? ` · ${item.barcode}` : ''}</small></td><td>{item.quantity}</td><td>{moneyMinor(item.unitPriceMinor, printRequest.sale.currency)}</td><td>{moneyMinor(item.lineTotalMinor, printRequest.sale.currency)}</td></tr>)}
@@ -595,4 +737,20 @@ export function PosCart({
       </div>}
     </section>}
   </>
+}
+
+function SalesRangeControls({ preset, setPreset, customFrom, setCustomFrom, customTo, setCustomTo }: {
+  preset: SalesPreset
+  setPreset: (value: SalesPreset) => void
+  customFrom: string
+  setCustomFrom: (value: string) => void
+  customTo: string
+  setCustomTo: (value: string) => void
+}) {
+  return <div className="pos-sales-filters"><label><CalendarDays size={14} /><span className="pos-visually-hidden">Sales date range</span><select aria-label="Sales date range" value={preset} onChange={(event) => setPreset(event.target.value as SalesPreset)}><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="this-week">This week</option><option value="last-week">Last week</option><option value="this-month">This month</option><option value="last-month">Last month</option><option value="custom">Custom range</option></select></label>{preset === 'custom' && <><label><span className="pos-visually-hidden">Start date</span><input aria-label="Custom start date" type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} /></label><label><span className="pos-visually-hidden">End date</span><input aria-label="Custom end date" type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} /></label></>}{preset !== 'today' && <button type="button" className="pos-reset-date" onClick={() => { setCustomFrom(''); setCustomTo(''); setPreset('today') }}>Today</button>}</div>
+}
+
+function SaleHistoryRow({ sale, currency, printing, onReprint, onOpen }: { sale: Sale; currency: string; printing: boolean; onReprint: () => void; onOpen: () => void }) {
+  const itemSummary = sale.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')
+  return <article className="pos-history-row pos-sale-history-row"><div><b>{sale.receiptNumber}</b><small>{formatSaleDate(sale.createdAt)} · {sale.items.length} item line{sale.items.length === 1 ? '' : 's'}{itemSummary ? ` · ${itemSummary}` : ''}</small><strong>{moneyMinor(sale.totalMinor, sale.currency || currency)}</strong><em>{sale.payment.method} · {sale.payment.status}</em></div><button className="pos-icon-action" type="button" onClick={onReprint} disabled={printing} aria-label={`Reprint saved receipt ${sale.receiptNumber} on Bluetooth printer`}><Printer /></button><button className="pos-icon-action" type="button" onClick={onOpen} aria-label={`Open saved receipt ${sale.receiptNumber} for browser printing`}><FileDown /></button></article>
 }

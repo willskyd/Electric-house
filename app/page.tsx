@@ -40,7 +40,11 @@ import MobileNav from '../components/dashboard/MobileNav'
 import Inbox from '../components/dashboard/Inbox'
 import { LoginScreen } from '../components/dashboard/LoginScreen'
 import { OverviewSection } from '../components/dashboard/sections/OverviewSection'
+import { StoreSection } from '../components/dashboard/sections/StoreSection'
+import { TransfersSection } from '../components/dashboard/sections/TransfersSection'
+import { useStoreTransfersPrototype } from '../components/dashboard/useStoreTransfersPrototype'
 import { PosCart } from '../components/dashboard/PosCart'
+import { SearchableProductSelect } from '../components/dashboard/SearchableProductSelect'
 import { initialActivities, initialDebts, initialProducts } from '../components/dashboard/data'
 import type { Activity, Debt, Product, Payment, Receipt, Section } from '../components/dashboard/types'
 import { money, now, Stat, daysAgo } from '../components/dashboard/utils'
@@ -62,10 +66,12 @@ function isProductList(value: unknown): value is Product[] {
 
 export default function Page() {
   const [section, setSection] = useState<Section>('Overview')
+  const prototypeData = useStoreTransfersPrototype()
   const [products, setProducts] = useState<Product[]>([])
   const [productsLoading, setProductsLoading] = useState(true)
   const [productsError, setProductsError] = useState('')
-const [debts, setDebts] = useState<Debt[]>([])
+  const [debts, setDebts] = useState<Debt[]>([])
+  const [overviewSalesMinor, setOverviewSalesMinor] = useState<number | null>(null)
   const [receipts, setReceipts] = useState<Receipt[]>([])
   const [deleteProduct, setDeleteProduct] = useState<Product | null>(null)
   const [deleteReceipt, setDeleteReceipt] = useState<Receipt | null>(null)
@@ -84,6 +90,15 @@ const [debts, setDebts] = useState<Debt[]>([])
   const [signedIn, setSignedIn] = useState(true)
   const [activities, setActivities] = useState<Activity[]>([])
   const [selectedInbox, setSelectedInbox] = useState<Activity | null>(null)
+
+  const refreshProducts = async () => {
+    const response = await fetch('/api/products', { cache: 'no-store' })
+    const result: unknown = await response.json().catch(() => null)
+    if (!response.ok || !isProductList(result)) throw new Error('Inventory could not be refreshed. Reload before another stock operation.')
+    setProducts(result)
+    setProductsError('')
+    return result
+  }
 
   useEffect(() => {
     try {
@@ -167,6 +182,30 @@ const [debts, setDebts] = useState<Debt[]>([])
   void loadOtherDashboardData()
   return () => { cancelled = true }
 }, [])
+
+useEffect(() => {
+  if (section !== 'Overview') return
+  let cancelled = false
+  setOverviewSalesMinor(null)
+  const from = new Date()
+  from.setHours(0, 0, 0, 0)
+  const to = new Date(from)
+  to.setDate(to.getDate() + 1)
+  const params = new URLSearchParams({ paged: '1', limit: '1', from: from.toISOString(), to: to.toISOString() })
+  fetch(`/api/sales?${params.toString()}`, { cache: 'no-store' })
+    .then(async (response) => {
+      const result: unknown = await response.json().catch(() => null)
+      if (!response.ok || typeof result !== 'object' || result === null || !('summary' in result) || typeof result.summary !== 'object' || result.summary === null || !('totalMinor' in result.summary) || typeof result.summary.totalMinor !== 'number' || !Number.isSafeInteger(result.summary.totalMinor)) {
+        throw new Error('Today’s sales total is unavailable')
+      }
+      if (!cancelled) setOverviewSalesMinor(result.summary.totalMinor)
+    })
+    .catch((error: unknown) => {
+      console.error('Failed to load today’s sales total:', error)
+      if (!cancelled) setOverviewSalesMinor(null)
+    })
+  return () => { cancelled = true }
+}, [section])
 
 useEffect(() => {
   async function loadSettings() {
@@ -467,67 +506,66 @@ const formatCurrency = (amount: number) => {
 
 
   const addDebt = async (e: React.FormEvent<HTMLFormElement>) => {
-  e.preventDefault()
+    e.preventDefault()
+    const form = new FormData(e.currentTarget)
+    const customer = String(form.get('customer') || '').trim()
+    const idempotencyKey = String(form.get('idempotencyKey') || '')
 
-  const f = new FormData(e.currentTarget)
-
-  const customer = String(f.get('customer') || '').trim()
-  const item = String(f.get('item') || '').trim()
-  const amount = Number(f.get('amount'))
-
-  const newDebt = {
-    customer,
-    invoice: `INV-${String(Date.now()).slice(-4)}`,
-    items: [
-      {
-        name: item,
-        price: amount,
-      },
-    ],
-    amount,
-    payments: [],
-    due: 'Not set',
-    createdAt: now(),
-  }
-
-  try {
-    const response = await fetch('/api/debts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(newDebt),
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to add debt')
+    let lines: Array<{ productId: number; quantity: number; amount: number }>
+    try {
+      const parsed: unknown = JSON.parse(String(form.get('lines') || '[]'))
+      if (!Array.isArray(parsed)) throw new Error('Product rows are invalid')
+      lines = parsed.map((line) => {
+        if (typeof line !== 'object' || line === null || !('productId' in line) || !('quantity' in line)) throw new Error('Product rows are invalid')
+        const productId = Number(line.productId)
+        const quantity = Number(line.quantity)
+        const amountValue = Number(line.amount)
+        const product = products.find((item) => item.id === productId)
+        const amount = Number.isFinite(amountValue) && amountValue >= 0 ? amountValue : (product ? product.price * quantity : 0)
+        if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) throw new Error('Choose a product and enter a valid quantity for every row')
+        if (!Number.isFinite(amount) || amount < 0) throw new Error('Enter a valid amount for every row')
+        return { productId, quantity, amount }
+      })
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Product rows are invalid')
+      return
     }
 
-    const savedDebt = await response.json()
+    const amount = lines.reduce((total, line) => total + line.amount, 0)
 
-    setDebts((debts) => [savedDebt, ...debts])
+    try {
+      const response = await fetch('/api/debts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey, customer, lines, amount, due: '30 days', createdAt: new Date().toISOString() }),
+      })
 
-    setModal(null)
+      const result: unknown = await response.json().catch(() => null)
+      if (!response.ok) {
+        const message = typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Debt could not be saved'
+        throw new Error(message)
+      }
+      if (typeof result !== 'object' || result === null || !('id' in result) || !('amount' in result)) throw new Error('The saved debt response is invalid')
 
-  notify(
-  `Debt added for ${savedDebt.customer}`,
-  `New debt created. Invoice: ${savedDebt.invoice}. Total amount: ${money(savedDebt.amount, settings.currency)}. Item: ${savedDebt.items?.[0]?.name || 'No item details'}.`,
-  true,
-  {
-    type: 'debt',
-    amount: savedDebt.amount,
-    currency: settings.currency,
-    customer: savedDebt.customer,
-    invoice: savedDebt.invoice,
-    remaining: savedDebt.amount,
+      const savedDebt = result as Debt
+      setDebts((current) => [savedDebt, ...current.filter((debt) => debt.id !== savedDebt.id)])
+      setModal(null)
+      notify(
+        `Debt added for ${savedDebt.customer}`,
+        `Invoice: ${savedDebt.invoice}. Total: ${money(savedDebt.amount, settings.currency)}. ${savedDebt.items.map((item) => `${item.name} × ${item.quantity ?? 1}`).join(', ')}. Stock was deducted.`,
+        true,
+        { type: 'debt', amount: savedDebt.amount, currency: settings.currency, customer: savedDebt.customer, invoice: savedDebt.invoice, remaining: savedDebt.amount },
+      )
+      try {
+        await refreshProducts()
+      } catch {
+        setToast('Debt saved and stock deducted, but inventory could not refresh. Reload the dashboard before the next stock operation.')
+      }
+    } catch (error) {
+      console.error('Failed to add debt:', error)
+      setToast(error instanceof Error ? error.message : 'Debt could not be saved')
+    }
   }
-     ), 
-    undefined, true
-  } catch (error) {
-    console.error('Failed to add debt:', error)
-    setToast('Failed to add debt')
-  }
-}
 
  const addReceipt = async (e: React.FormEvent<HTMLFormElement>) => {
   e.preventDefault()
@@ -589,6 +627,8 @@ const formatCurrency = (amount: number) => {
   }
 }
 
+  const sectionHeading = section === 'New Stocks' ? 'Stock' : section === 'Store' ? 'Store' : section
+
   return (
     <div className={dark ? 'app-shell dark' : 'app-shell'}>
       <Sidebar section={section} sidebar={sidebar} settings={settings} onGo={go} onClose={() => setSidebar(false)} />
@@ -613,12 +653,12 @@ const formatCurrency = (amount: number) => {
           {section !== 'POS' && <div className="page-heading">
             <div>
               <div className="eyebrow">{section === 'Overview' ? 'Good morning, Alex' : 'Workspace'}</div>
-              <h1>{section}</h1>
+              <h1>{sectionHeading}</h1>
               <p>
-                {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : 'Keep an eye on your products and stock levels.'}
+                {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : section === 'Store' ? 'Receive, check, and record deliveries at your main store.' : section === 'Transfers' ? 'Record goods dispatched from the main store to a branch.' : 'Keep an eye on your products and stock levels.'}
               </p>
             </div>
-            {!['Overview', 'Paid', 'Settings', 'Team members', 'Inbox'].includes(section) && (
+            {!['Overview', 'Paid', 'Settings', 'Team members', 'Inbox', 'Store', 'Transfers'].includes(section) && (
               <button className="primary-button" onClick={() => setModal(section === 'Debt' ? 'debt' : section === 'New Stocks' ? 'receipt' : 'product')}>
                 <Plus />
                 {section === 'Debt' ? 'Add debt' : section === 'New Stocks' ? 'Record stock' : 'Add product'}
@@ -626,7 +666,7 @@ const formatCurrency = (amount: number) => {
             )}
           </div>}
 
-          {section === 'Overview' && <OverviewSection outstanding={outstanding} onGo={go} />}
+          {section === 'Overview' && <OverviewSection outstanding={outstanding} salesMinor={overviewSalesMinor} currency={settings.currency} onGo={go} />}
 
           <PosCart active={section === 'POS'} products={products} productsLoading={productsLoading} productsError={productsError} currency={settings.currency} workspace={settings.workspace} onRefreshProducts={refreshPosProducts} onOpen={() => go('POS')} />
 
@@ -787,6 +827,29 @@ const formatCurrency = (amount: number) => {
   </section>
 )}
 
+          {section === 'Store' && <StoreSection
+            products={products}
+            productsLoading={productsLoading}
+            productsError={productsError}
+            persistenceError={prototypeData.persistenceError}
+            records={prototypeData.receivingRecords}
+            onCreate={async (record) => { const saved = await prototypeData.addReceivingRecord(record); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onUpdate={async (id, record, revision) => { const saved = await prototypeData.updateReceivingRecord(id, record, revision); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+          />}
+
+          {section === 'Transfers' && <TransfersSection
+            products={products}
+            productsLoading={productsLoading}
+            productsError={productsError}
+            persistenceError={prototypeData.persistenceError}
+            branches={prototypeData.branches}
+            transfers={prototypeData.transfers}
+            onCreate={async (transfer) => { const saved = await prototypeData.addTransfer(transfer); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onUpdate={async (id, transfer, revision) => { const saved = await prototypeData.updateTransfer(id, transfer, revision); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onAddBranch={prototypeData.addBranch}
+            onRenameBranch={prototypeData.renameBranch}
+          />}
+
           {(section === 'Debt' || section === 'Paid') && (
             <>
               <div className="debt-total">
@@ -864,6 +927,10 @@ const formatCurrency = (amount: number) => {
           <RecordModal
             type={modal}
             onClose={() => setModal(null)}
+            products={products}
+            productsLoading={productsLoading}
+            productsError={productsError}
+            currency={settings.currency}
            onSubmit={
               modal === 'product'
               ? addProduct
@@ -879,79 +946,39 @@ const formatCurrency = (amount: number) => {
             debt={selectedDebt}
             readOnly={section === 'Paid'}
             onClose={() => { setModal(null); setSelectedDebt(null) }}
-            onSave={async (d, fullyPaid) => {
-  const updatedDebt = {
-    ...d,
-    paidAt: fullyPaid ? now() : d.paidAt,
-  }
+            onSave={async (draft, fullyPaid) => {
+              const updatedDebt = {
+                ...draft,
+                paidAt: fullyPaid ? now() : draft.paidAt,
+              }
 
-  try {
-    const response = await fetch(`/api/debts/${d.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(updatedDebt),
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to update debt')
-    }
-
-    const savedDebt = await response.json()
-
-    setDebts((items) =>
-      items.map((item) =>
-        item.id === savedDebt.id ? savedDebt : item
-      )
-    )
-
-    setModal(null)
-    setSelectedDebt(null)
-
-    const oldPaidAmount = (selectedDebt?.payments ?? []).reduce(
-      (total, payment) => total + payment.amount,
-      0
-    )
-
-    const newPaidAmount = (savedDebt.payments ?? []).reduce(
-  (total: number, payment: Payment) =>
-    total + Number(payment.amount),
-  0
-)
-
-    const paymentAmount = Math.max(
-      0,
-      newPaidAmount - oldPaidAmount
-    )
-
-    const remaining = Math.max(
-      0,
-      savedDebt.amount - newPaidAmount
-    )
-
-    notify(
-      fullyPaid
-        ? `Debt for ${savedDebt.customer} marked fully paid`
-        : `Payment received from ${savedDebt.customer}`,
-      fullyPaid
-        ? `Debt fully paid. Total paid: ${money(newPaidAmount, settings.currency)}`
-        : `Payment of ${money(paymentAmount, settings.currency)} received. Remaining balance: ${money(remaining, settings.currency)}`,
-      true,
-      {
-        type: 'payment',
-        amount: paymentAmount,
-        currency: settings.currency,
-        customer: savedDebt.customer,
-        invoice: savedDebt.invoice,
-        remaining,
-      }
-    )
-  } catch (error) {
-    console.error('Failed to update debt:', error)
-    setToast('Failed to update debt')
-  }
-}}
+              const response = await fetch(`/api/debts/${draft.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedDebt),
+              })
+              const result: unknown = await response.json().catch(() => null)
+              if (!response.ok) {
+                const message = typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Debt could not be saved'
+                throw new Error(message)
+              }
+              if (typeof result !== 'object' || result === null || !('id' in result)) throw new Error('The saved debt response is invalid')
+              const savedDebt = result as Debt
+              const previousPaidAmount = (selectedDebt.payments ?? []).reduce((total, payment) => total + Number(payment.amount), 0)
+              const newPaidAmount = (savedDebt.payments ?? []).reduce((total, payment) => total + Number(payment.amount), 0)
+              const lastPaymentAmount = Number((savedDebt.payments ?? []).slice(-1)[0]?.amount ?? Math.max(0, newPaidAmount - previousPaidAmount) ?? 0)
+              const remaining = Math.max(0, savedDebt.amount - newPaidAmount)
+              setDebts((items) => items.map((item) => item.id === savedDebt.id ? savedDebt : item))
+              setModal(null)
+              setSelectedDebt(null)
+              notify(
+                remaining === 0 ? `Debt for ${savedDebt.customer} marked fully paid` : `Payment received from ${savedDebt.customer}`,
+                remaining === 0 ? `Debt fully paid. Total paid: ${money(newPaidAmount, settings.currency)}` : `Payment of ${money(lastPaymentAmount, settings.currency)} received from ${savedDebt.customer}. Remaining balance: ${money(remaining, settings.currency)}`,
+                true,
+                { type: 'payment', amount: lastPaymentAmount, currency: settings.currency, customer: savedDebt.customer, invoice: savedDebt.invoice, remaining },
+              )
+              return savedDebt
+            }}
           />
         )}
 
@@ -1564,42 +1591,70 @@ function DebtDetail({
   debt: Debt
   readOnly: boolean
   onClose: () => void
-  onSave: (d: Debt, fullyPaid: boolean) => void
+  onSave: (draft: Debt, fullyPaid: boolean) => Promise<Debt>
 }) {
-  const [draft, setDraft] = useState<Debt>(JSON.parse(JSON.stringify(debt)))
+  const [draft, setDraft] = useState<Debt>(JSON.parse(JSON.stringify(debt)) as Debt)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const isSavedDebt = Boolean(debt.id)
-
-  // IDs of payments that already existed when the modal was opened
-  const originalPaymentIds = useMemo(
-    () => new Set(debt.payments.map((p) => p.id)),
-    [debt.payments]
-  )
-
-  const paidTotal = draft.payments.reduce(
-    (a, p) => a + Math.max(0, Number(p.amount) || 0),
-    0
-  )
+  const originalPaymentIds = useMemo(() => new Set((debt.payments ?? []).map((payment) => payment.id)), [debt.payments])
+  const paidTotal = (draft.payments ?? []).reduce((total, payment) => total + Math.max(0, Number(payment.amount) || 0), 0)
   const balance = Math.max(0, (Number(draft.amount) || 0) - paidTotal)
 
-  const updateItem = (i: number, key: 'name' | 'price', value: string) =>
-    setDraft((d) => {
-      const items = d.items.map((it, n) =>
-        n === i
-          ? {
-              ...it,
-              [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value,
-            }
-          : it
-      )
+  const updateItem = (index: number, key: 'name' | 'price', value: string | number) => {
+    setDraft((current) => {
+      const items = current.items.map((item, row) => row === index ? {
+        ...item,
+        [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value,
+      } : item)
+
+      const nextAmount = items.reduce((sum, item) => sum + Math.max(0, Number(item.price) || 0), 0)
+
       return {
-        ...d,
+        ...current,
         items,
-        amount: items.reduce(
-          (sum, item) => sum + Math.max(0, Number(item.price) || 0),
-          0
-        ),
+        amount: nextAmount,
       }
     })
+  }
+
+  const addItem = () => {
+    setDraft((current) => ({
+      ...current,
+      items: [...current.items, { name: '', price: 0, date: now() }],
+    }))
+  }
+
+  const saveDraft = async () => {
+    if (readOnly || saving) return
+
+    const normalizedDraft: Debt = {
+      ...draft,
+      customer: draft.customer.trim(),
+      items: (draft.items ?? []).map((item) => ({
+        ...item,
+        name: String(item.name ?? '').trim(),
+        price: Math.max(0, Number(item.price) || 0),
+        date: item.date ?? now(),
+      })),
+      amount: Math.max(0, Number(draft.amount) || 0),
+      payments: (draft.payments ?? []).map((payment) => ({
+        ...payment,
+        amount: Math.max(0, Number(payment.amount) || 0),
+      })),
+    }
+
+    setSaving(true)
+    setError('')
+
+    try {
+      await onSave(normalizedDraft, balance <= 0)
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Debt could not be saved')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="modal-backdrop">
@@ -1608,11 +1663,9 @@ function DebtDetail({
           <div>
             <div className="eyebrow">Debt detail</div>
             <h2>{draft.customer}</h2>
-            <p>
-              {draft.invoice} · Created {draft.createdAt}
-            </p>
+            <p>{draft.invoice} · Created {draft.createdAt}</p>
           </div>
-          <button className="icon-button" onClick={onClose}>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close debt details">
             <X />
           </button>
         </div>
@@ -1621,127 +1674,57 @@ function DebtDetail({
           <div className="detail-grid">
             <label>
               Customer name
-              <input
-                disabled={readOnly || isSavedDebt}
-                value={draft.customer}
-                onChange={(e) =>
-                  setDraft({ ...draft, customer: e.target.value })
-                }
-              />
+              <input disabled={readOnly || isSavedDebt} value={draft.customer} onChange={(event) => setDraft({ ...draft, customer: event.target.value })} />
             </label>
-
             <label>
               Original debt amount
-              <input
-                type="number"
-                disabled={readOnly || isSavedDebt}
-                value={draft.amount}
-                onChange={(e) =>
-                  setDraft({ ...draft, amount: Number(e.target.value) })
-                }
-              />
+              <input type="number" disabled={readOnly || isSavedDebt} value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: Number(event.target.value) })} />
             </label>
           </div>
 
           <h3>Items bought</h3>
           <div className="editable-list">
-            {draft.items.map((item, i) => {
-              const isExistingItem = i < debt.items.length
-
-              return (
-                <div className="editable-row" key={i}>
-                  <input
-                    disabled={readOnly || (isExistingItem && isSavedDebt)}
-                    value={item.name}
-                    onChange={(e) => updateItem(i, 'name', e.target.value)}
-                  />
-                  <input
-                    type="number"
-                    disabled={readOnly || (isExistingItem && isSavedDebt)}
-                    value={item.price}
-                    onChange={(e) => updateItem(i, 'price', e.target.value)}
-                  />
-                </div>
-              )
+            {draft.items.map((item, index) => {
+              const isExistingItem = index < debt.items.length
+              return <div className="editable-row" key={`debt-item-${index}`}>
+                <input type="text" disabled={readOnly || (isExistingItem && isSavedDebt)} value={item.name ?? ''} onChange={(event) => updateItem(index, 'name', event.target.value)} placeholder="Item name" />
+                <input type="number" disabled={readOnly || (isExistingItem && isSavedDebt)} value={item.price} onChange={(event) => updateItem(index, 'price', event.target.value)} placeholder="0" />
+                {item.date && <span className="item-date">{item.date}</span>}
+              </div>
             })}
-            {!readOnly && (
-              <button
-                className="secondary-button"
-                onClick={() =>
-                  setDraft((d) => ({
-                    ...d,
-                    items: [...d.items, { name: 'New item', price: 0 }],
-                  }))
-                }
-              >
-                <Plus />
-                Add item
-              </button>
-            )}
+            {!readOnly && <button type="button" className="secondary-button" onClick={addItem}><Plus />Add item</button>}
           </div>
 
           <h3>Part payments</h3>
           <div className="payment-list">
-            {draft.payments.map((p, i) => {
-              const isLocked = readOnly || originalPaymentIds.has(p.id)
-
-              return (
-                <div className="editable-row" key={p.id}>
-                  <input
-                    type="number"
-                    disabled={isLocked}
-                    value={p.amount}
-                    onChange={(e) =>
-                      setDraft((d) => ({
-                        ...d,
-                        payments: d.payments.map((x, n) =>
-                          n === i
-                            ? { ...x, amount: Number(e.target.value) }
-                            : x
-                        ),
-                      }))
-                    }
-                  />
-                  <span>{p.date}</span>
-                </div>
-              )
+            {draft.payments.map((payment, index) => {
+              const isLocked = readOnly || originalPaymentIds.has(payment.id)
+              return <div className="editable-row" key={String(payment.id ?? `${payment.date}-${index}`)}>
+                <input type="number" disabled={isLocked} value={payment.amount} onChange={(event) => setDraft((current) => ({ ...current, payments: current.payments.map((item, row) => row === index ? { ...item, amount: Number(event.target.value) } : item) }))} />
+                <span>{payment.date}</span>
+              </div>
             })}
-
-            {!readOnly && (
-              <button
-                className="secondary-button"
-                onClick={() =>
-                  setDraft((d) => ({
-                    ...d,
-                    payments: [
-                      ...d.payments,
-                      { id: Date.now(), amount: 0, date: now() },
-                    ],
-                  }))
-                }
-              >
-                <Plus />
-                Add payment
-              </button>
-            )}
+            {!readOnly && <button type="button" className="secondary-button" onClick={() => setDraft((current) => ({ ...current, payments: [...current.payments, { id: Date.now(), amount: 0, date: now() }] }))}><Plus />Add payment</button>}
           </div>
         </div>
 
         <div className="summary-row">
           <div>
             <span>{readOnly ? 'Paid in full' : 'Balance'}</span>
-            <strong>
-              {readOnly ? money(draft.amount) : money(balance)}
-            </strong>
+            <strong>{readOnly ? money(draft.amount) : money(balance)}</strong>
           </div>
 
           {!readOnly && (
-            <button
-              className="primary-button"
-              onClick={() => onSave(draft, balance <= 0)}
-            >
-              {balance <= 0 ? 'Mark as paid' : 'Save changes'}
-            </button>
+            <>
+              {error && <small className="field-error">{error}</small>}
+              <button
+                className="primary-button"
+                onClick={() => void saveDraft()}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : balance <= 0 ? 'Mark as paid' : 'Save changes'}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1750,13 +1733,84 @@ function DebtDetail({
 }
 
 
+function DebtComposer({ products, productsLoading, productsError, currency, onClose, onSubmit }: {
+  products: Product[]
+  productsLoading: boolean
+  productsError: string
+  currency: string
+  onClose: () => void
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
+}) {
+  const [customer, setCustomer] = useState('')
+  const [item, setItem] = useState('')
+  const [amount, setAmount] = useState('')
+  const idempotencyRef = useRef<HTMLInputElement>(null)
 
-function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
+  const matchedProduct = products.find(
+    (product) => product.name.trim().toLowerCase() === item.trim().toLowerCase()
+  )
+  const amountValue = Number(amount)
+  const validAmount = amount.trim() !== '' && Number.isFinite(amountValue) && amountValue > 0
+  const canSubmit = customer.trim().length > 0 && !!matchedProduct &&
+    validAmount && matchedProduct.stock >= 1 && !productsLoading && !productsError
+
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+    if (!canSubmit) {
+      event.preventDefault()
+      return
+    }
+    if (idempotencyRef.current && !idempotencyRef.current.value) {
+      idempotencyRef.current.value = window.crypto.randomUUID()
+    }
+    onSubmit(event)
+  }
+
+  return <div className="modal-backdrop" onMouseDown={(event) => event.currentTarget === event.target && onClose()}>
+    <div className="modal debt-create-modal">
+      <div className="modal-header">
+        <div>
+          <div className="eyebrow">Workspace action</div>
+          <h2>Add customer debt</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close debt form"><X /></button>
+      </div>
+      <form onSubmit={submit} noValidate>
+        <label>Customer name
+          <input name="customer" value={customer} onChange={(event) => { setCustomer(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} maxLength={120} required placeholder="e.g. Harbor Market" />
+        </label>
+        <label>Item bought
+          <input name="item" list="debt-catalog-products" value={item} onChange={(event) => { setItem(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required placeholder="Enter a catalog product name" autoComplete="off" />
+          <datalist id="debt-catalog-products">
+            {products.filter((product) => product.status.toLowerCase() !== 'discontinued').map((product) =>
+              <option key={product.id} value={product.name} />
+            )}
+          </datalist>
+        </label>
+        <label>Amount
+          <input name="amount" type="number" min="0.01" max="1000000000" step="0.01" value={amount} onChange={(event) => { setAmount(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required placeholder="0.00" />
+        </label>
+        <input type="hidden" name="lines" value={JSON.stringify(matchedProduct ? [{ productId: matchedProduct.id, quantity: 1, amount: validAmount ? amountValue : 0 }] : [])} />
+        <input type="hidden" name="idempotencyKey" ref={idempotencyRef} defaultValue="" />
+        {productsLoading && <p role="status">Loading stock products…</p>}
+        {productsError && <p className="prototype-feedback error" role="alert">{productsError}</p>}
+        {!productsLoading && !productsError && item.trim() && !matchedProduct && <p className="prototype-feedback error" role="alert">Choose a product name from the catalog suggestions.</p>}
+        {matchedProduct && matchedProduct.stock < 1 && <p className="prototype-feedback error" role="alert">This product is out of stock.</p>}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+          <button className="primary-button" type="submit" disabled={!canSubmit}><Check />Save record</button>
+        </div>
+      </form>
+    </div>
+  </div>
+}
+
+function RecordModal({ type, onClose, onSubmit, products, productsLoading, productsError, currency }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void; products: Product[]; productsLoading: boolean; productsError: string; currency: string }) {
+  if (type === 'debt') return <DebtComposer products={products} productsLoading={productsLoading} productsError={productsError} currency={currency} onClose={onClose} onSubmit={onSubmit} />
   return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}>
     <div className="modal">
-      <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'debt' ? 'Add customer debt' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+      <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
       <form onSubmit={onSubmit}>
-        <label>{type === 'debt' ? 'Customer name' : 'Name or reference'}<input name={type === 'debt' ? 'customer' : 'name'} required placeholder={type === 'debt' ? 'e.g. Harbor Market' : 'e.g. Premium Rice 25kg'} /></label>
+        <label>Name or reference<input name="name" required placeholder="e.g. Premium Rice 25kg" /></label>
         {type === 'product' && <div className="form-row">
           <label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label>
           <label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label>
@@ -1764,7 +1818,6 @@ function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | '
           <label>Price<input name="price" type="number" min="0" step="0.01" required /></label>
           <label>Quantity<input name="stock" type="number" min="0" required /></label>
         </div>}
-        {type === 'debt' && <><label>Item bought<input name="item" required placeholder="e.g. Premium Rice 25kg" /></label><label>Amount<input name="amount" type="number" min="1" required /></label></>}
         {type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div>
       </form>

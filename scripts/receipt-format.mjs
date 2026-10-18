@@ -30,9 +30,11 @@ function pair(label, value, width = 32) {
 }
 
 export function formatReceipt(sale) {
+  const businessName = ascii(sale.businessName).trim();
+  const brandOnly = businessName.replace(/[^a-z0-9]/gi, '').toLowerCase() === 'micromec';
   const lines = [
-    '\x1ba\x01\x1bE\x01MicroMec\x1bE\x00',
-    `\x1bE\x01${ascii(sale.businessName)}\x1bE\x00`,
+    '\x1ba\x01\x1bE\x01\x1d!\x21MICROMEC\x1d!\x00\x1bE\x00',
+    ...(!brandOnly && businessName ? [`\x1bE\x01${businessName}\x1bE\x00`] : []),
     'SALES RECEIPT', '\x1ba\x00',
     ...wrap(`Receipt no.: ${sale.receiptNumber}`, 32), ...wrap(`Date: ${new Date(sale.createdAt).toLocaleString('en-GB')}`, 32),
     '-'.repeat(32),

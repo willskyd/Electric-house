@@ -1,4 +1,4 @@
-import { ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, Package, Settings, Sparkles, Store, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Boxes, ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, Package, Settings, Sparkles, Store, Users, X } from 'lucide-react'
 
 import type { Section } from './types'
 import { nav } from './data'
@@ -7,6 +7,8 @@ const iconMap = {
   Overview: LayoutDashboard,
   Stocks: Package,
   'New Stocks': ClipboardList,
+  Store: Boxes,
+  Transfers: ArrowLeftRight,
   Debt: CreditCard,
   Paid: CircleDollarSign,
   Settings: Settings,
@@ -48,10 +50,11 @@ export function Sidebar({
       <nav>
         {nav.map(({ label }) => {
           const Icon = iconMap[label as keyof typeof iconMap] || LayoutDashboard
+          const displayLabel = label === 'New Stocks' ? 'Stock' : label === 'Store' ? 'Store' : label
           return (
-            <button key={label} className={section === label ? 'nav-item active' : 'nav-item'} onClick={() => onGo(label as Section)} title={!sidebar ? label : undefined}>
+            <button key={label} className={section === label ? 'nav-item active' : 'nav-item'} onClick={() => onGo(label as Section)} title={!sidebar ? displayLabel : undefined}>
               <Icon />
-              <span className="nav-label-text">{label}</span>
+              <span className="nav-label-text">{displayLabel}</span>
               {label === 'New Stocks' }
             </button>
           )

@@ -2,64 +2,67 @@
 set -u
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
-sleep_seconds=5
+readonly PRINTER_ADDRESS='86:67:7A:92:30:AE'
+readonly RETRY_SECONDS=10
+
+modprobe rfcomm >/dev/null 2>&1 || true
 
 while true; do
-  if ! bluetoothctl show 2>/dev/null | grep -qE '^\s*Powered: yes$'; then
+  if ! bluetoothctl show 2>/dev/null | grep -qE '^[[:space:]]*Powered: yes$'; then
     rfkill unblock bluetooth >/dev/null 2>&1 || true
     bluetoothctl power on >/dev/null 2>&1 || true
-    sleep "$sleep_seconds"
+    sleep "$RETRY_SECONDS"
+    continue
+  fi
+
+  device_info=$(bluetoothctl info "$PRINTER_ADDRESS" 2>/dev/null || true)
+  if ! grep -qE '^[[:space:]]*Paired: yes[[:space:]]*$' <<<"$device_info"; then
+    sleep "$RETRY_SECONDS"
     continue
   fi
 
   rfcomm_state=$(rfcomm -a 2>/dev/null || true)
-  if grep -qE '^rfcomm[0-9]+:.*channel [0-9]+ connected\b' <<<"$rfcomm_state"; then
-    sleep "$sleep_seconds"
+  if grep -qiE "^rfcomm0:.*->[[:space:]]+$PRINTER_ADDRESS[[:space:]]+channel[[:space:]]+[0-9]+[[:space:]]+connected\\b" <<<"$rfcomm_state" && [[ -c /dev/rfcomm0 ]]; then
+    sleep "$RETRY_SECONDS"
     continue
   fi
 
-  selected_address=''
-  selected_connected=false
-  fallback_address=''
-
-  while read -r kind address _; do
-    [[ "$kind" == Device && "$address" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]] || continue
-    info=$(bluetoothctl info "$address" 2>/dev/null || true)
-    grep -qE '^[[:space:]]*Icon: printer[[:space:]]*$' <<<"$info" || continue
-    grep -qiE 'UUID: Serial Port[[:space:]]+\(00001101-0000-1000-8000-00805f9b34fb\)' <<<"$info" || continue
-
-    if grep -qE '^[[:space:]]*Connected: yes[[:space:]]*$' <<<"$info"; then
-      selected_address=${address^^}
-      selected_connected=true
-      break
-    fi
-    if [[ -z "$fallback_address" ]]; then fallback_address=${address^^}; fi
-  done < <(bluetoothctl devices Paired 2>/dev/null)
-
-  if [[ -z "$selected_address" ]]; then selected_address=$fallback_address; fi
-  if [[ -z "$selected_address" ]]; then
-    sleep "$sleep_seconds"
+  # BlueZ can report a cached Connected: yes state after the underlying link
+  # has gone away. Clear that ACL state and create a fresh link before SDP or
+  # RFCOMM, otherwise both can fail with EHOSTDOWN despite the cached status.
+  echo "Refreshing Bluetooth link to MPT-II ($PRINTER_ADDRESS)."
+  timeout --signal=TERM --kill-after=1 5 bluetoothctl disconnect "$PRINTER_ADDRESS" >/dev/null 2>&1 || true
+  sleep 1
+  connect_result=0
+  connect_output=$(timeout --signal=TERM --kill-after=2 10 bluetoothctl connect "$PRINTER_ADDRESS" 2>&1) || connect_result=$?
+  device_info=$(bluetoothctl info "$PRINTER_ADDRESS" 2>/dev/null || true)
+  if ! grep -qE '^[[:space:]]*Connected: yes[[:space:]]*$' <<<"$device_info"; then
+    if [[ -n "$connect_output" ]]; then echo "$connect_output"; fi
+    echo "Bluetooth link is not up (connect command exit $connect_result); retrying in ${RETRY_SECONDS}s."
+    sleep "$RETRY_SECONDS"
     continue
   fi
 
-  if [[ "$selected_connected" != true ]]; then
-    bluetoothctl connect "$selected_address" >/dev/null 2>&1 || {
-      sleep "$sleep_seconds"
-      continue
+  channel_output=$(timeout 10 sdptool search --bdaddr "$PRINTER_ADDRESS" SP 2>/dev/null || true)
+  channel=$(awk '
+    /^[[:space:]]*Channel[[:space:]]*:/ {
+      sub(/^[^:]*:[[:space:]]*/, "")
+      gsub(/[[:space:]]/, "")
+      print
+      exit
     }
-  fi
-
-  channel_output=$(timeout 10 sdptool search --bdaddr "$selected_address" SP 2>/dev/null || true)
-  channel=$(awk -F': ' '/^[[:space:]]*Channel:/ {print $2; exit}' <<<"$channel_output")
+  ' <<<"$channel_output")
   if [[ ! "$channel" =~ ^[0-9]{1,2}$ ]] || (( channel < 1 || channel > 30 )); then
-    sleep "$sleep_seconds"
-    continue
+    # BlueZ's RFCOMM utility uses SPP channel 1 when no channel is supplied.
+    # Try the standard channel when this printer's SDP endpoint is unavailable.
+    channel=1
+    echo "SDP channel lookup failed; trying the standard SPP RFCOMM channel 1."
   fi
 
-  rfcomm_state=$(rfcomm -a 2>/dev/null || true)
-  if ! grep -qE '^rfcomm[0-9]+:.*channel [0-9]+ connected\b' <<<"$rfcomm_state"; then
-    rfcomm release 0 >/dev/null 2>&1 || true
-    rfcomm connect 0 "$selected_address" "$channel" >/dev/null 2>&1 || true
-  fi
-  sleep "$sleep_seconds"
+  # rfcomm connect creates /dev/rfcomm0 and owns the SPP link until it drops.
+  # bluetoothctl only brings up the bounded ACL link above; rfcomm connect is
+  # the operation that creates and owns the RFCOMM tty.
+  rfcomm release 0 >/dev/null 2>&1 || true
+  rfcomm connect 0 "$PRINTER_ADDRESS" "$channel" || true
+  sleep "$RETRY_SECONDS"
 done

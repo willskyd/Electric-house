@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -u
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+sleep_seconds=5
+
+modprobe rfcomm >/dev/null 2>&1 || true
+
+while true; do
+  if ! bluetoothctl show 2>/dev/null | grep -qE '^[[:space:]]*Powered: yes$'; then
+    rfkill unblock bluetooth >/dev/null 2>&1 || true
+    bluetoothctl power on >/dev/null 2>&1 || true
+    sleep "$sleep_seconds"
+    continue
+  fi
+
+  rfcomm_state=$(rfcomm -a 2>/dev/null || true)
+  if grep -qE '^rfcomm0:.*channel [0-9]+ connected\b' <<<"$rfcomm_state" && [[ -c /dev/rfcomm0 ]]; then
+    sleep "$sleep_seconds"
+    continue
+  fi
+
+  selected_address=''
+  selected_connected=false
+  fallback_address=''
+
+  while read -r kind address _; do
+    [[ "$kind" == Device && "$address" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]] || continue
+    info=$(bluetoothctl info "$address" 2>/dev/null || true)
+    if ! grep -qE '^[[:space:]]*Icon: printer[[:space:]]*$' <<<"$info" &&
+       ! grep -qiE 'UUID: Serial Port[[:space:]]+\(00001101-0000-1000-8000-00805f9b34fb\)' <<<"$info"; then
+      continue
+    fi
+
+    if grep -qE '^[[:space:]]*Connected: yes[[:space:]]*$' <<<"$info"; then
+      selected_address=${address^^}
+      selected_connected=true
+      break
+    fi
+    if [[ -z "$fallback_address" ]]; then fallback_address=${address^^}; fi
+  done < <(bluetoothctl devices Paired 2>/dev/null)
+
+  if [[ -z "$selected_address" ]]; then selected_address=$fallback_address; fi
+  if [[ -z "$selected_address" ]]; then
+    sleep "$sleep_seconds"
+    continue
+  fi
+
+  bluetoothctl trust "$selected_address" >/dev/null 2>&1 || true
+  if [[ "$selected_connected" != true ]]; then
+    bluetoothctl connect "$selected_address" >/dev/null 2>&1 || {
+      sleep "$sleep_seconds"
+      continue
+    }
+  fi
+
+  channel_output=$(timeout 10 sdptool search --bdaddr "$selected_address" SP 2>/dev/null || true)
+  channel=$(awk -F': ' '/^[[:space:]]*Channel:/ {print $2; exit}' <<<"$channel_output")
+  if [[ ! "$channel" =~ ^[0-9]{1,2}$ ]] || (( channel < 1 || channel > 30 )); then
+    sleep "$sleep_seconds"
+    continue
+  fi
+
+  rfcomm_state=$(rfcomm -a 2>/dev/null || true)
+  if ! grep -qE '^rfcomm0:.*channel [0-9]+ connected\b' <<<"$rfcomm_state" || [[ ! -c /dev/rfcomm0 ]]; then
+    rfcomm release 0 >/dev/null 2>&1 || true
+    # Keep the RFCOMM session open for the lifetime of the Bluetooth link.
+    # The old 15-second timeout killed healthy connections periodically.
+    rfcomm connect 0 "$selected_address" "$channel" >/dev/null 2>&1 || true
+  fi
+  sleep "$sleep_seconds"
+done
