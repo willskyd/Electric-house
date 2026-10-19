@@ -30,6 +30,7 @@ export async function PATCH(
     const allowedFields = [
       "customer",
       "invoice",
+      "receiptNumber",
       "items",
       "amount",
       "payments",
@@ -44,6 +45,16 @@ export async function PATCH(
       if (body[field] !== undefined) {
         updates[field] = body[field];
       }
+    }
+
+    if ("receiptNumber" in updates) {
+      if (typeof updates.receiptNumber !== "string" || updates.receiptNumber.length > 100) {
+        return NextResponse.json(
+          { message: "Receipt number must be a string of 100 characters or fewer" },
+          { status: 400 }
+        );
+      }
+      updates.receiptNumber = updates.receiptNumber.trim();
     }
 
     if ("amount" in updates) {

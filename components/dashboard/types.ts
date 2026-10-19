@@ -92,6 +92,7 @@ export type Debt = {
   id: number | string
   customer: string
   invoice: string
+  receiptNumber?: string
   items: DebtItem[]
   amount: number
   payments: Payment[]

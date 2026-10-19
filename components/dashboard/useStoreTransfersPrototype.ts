@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PrototypeBranch, PrototypeTransfer, StoreReceivingRecord } from './types'
-import { STORE_TRANSFERS_STORAGE_KEY } from '@/lib/store-transfers-prototype'
 
 type StoreTransferState = { receivingRecords: StoreReceivingRecord[]; branches: PrototypeBranch[]; transfers: PrototypeTransfer[] }
 const EMPTY: StoreTransferState = { receivingRecords: [], branches: [], transfers: [] }
@@ -47,19 +46,6 @@ export function useStoreTransfersPrototype() {
 
   useEffect(() => {
     let cancelled = false
-    try {
-      const raw = window.localStorage.getItem(STORE_TRANSFERS_STORAGE_KEY)
-      if (raw) {
-        const legacy: unknown = JSON.parse(raw)
-        if (typeof legacy === 'object' && legacy !== null) {
-          const old = legacy as Record<string, unknown>
-          const count = (Array.isArray(old.receivingRecords) ? old.receivingRecords.length : 0) + (Array.isArray(old.transfers) ? old.transfers.length : 0)
-          if (count) setPersistenceError(`${count} earlier browser-only Store/Transfer record(s) remain in this browser. They were not imported because their stock effects were never verified.`)
-        }
-      }
-    } catch {
-      setPersistenceError('Earlier browser-only Store/Transfer data could not be read. Server records are loaded separately.')
-    }
     void reload().catch((error: unknown) => {
       if (!cancelled) setPersistenceError(error instanceof Error ? error.message : 'Store and Transfer records could not be loaded')
     }).finally(() => { if (!cancelled) setHydrated(true) })

@@ -47,7 +47,7 @@ export function Topbar({
         <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex">
           <span>Workspace</span>
           <ChevronRight className="h-3.5 w-3.5" />
-          <b className="text-sm text-slate-900 dark:text-slate-100">{section === 'New Stocks' ? 'Stock' : section === 'Store' ? 'Store' : section}</b>
+          <b className="text-sm text-slate-900 dark:text-slate-100">{section === 'New Stocks' ? 'Parking Shop' : section === 'Store' ? 'New Stocks' : section}</b>
         </div>
 
         <div className="ml-auto flex items-center gap-2">

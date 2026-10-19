@@ -308,7 +308,7 @@ const notify = async (
   )
 
   const visibleDebts = useMemo(
-    () => debts.filter((d) => (section === 'Paid' ? !!d.paidAt : !d.paidAt)).filter((d) => `${d.customer} ${d.invoice}`.toLowerCase().includes(query.toLowerCase())),
+    () => debts.filter((d) => (section === 'Paid' ? !!d.paidAt : !d.paidAt)).filter((d) => `${d.customer} ${d.invoice} ${d.receiptNumber ?? ''}`.toLowerCase().includes(query.toLowerCase())),
     [debts, query, section],
   )
 
@@ -509,35 +509,21 @@ const formatCurrency = (amount: number) => {
     e.preventDefault()
     const form = new FormData(e.currentTarget)
     const customer = String(form.get('customer') || '').trim()
+    const item = String(form.get('item') || '').trim()
+    const receiptNumber = String(form.get('receiptNumber') || '').trim()
+    const amount = Number(form.get('amount'))
     const idempotencyKey = String(form.get('idempotencyKey') || '')
 
-    let lines: Array<{ productId: number; quantity: number; amount: number }>
-    try {
-      const parsed: unknown = JSON.parse(String(form.get('lines') || '[]'))
-      if (!Array.isArray(parsed)) throw new Error('Product rows are invalid')
-      lines = parsed.map((line) => {
-        if (typeof line !== 'object' || line === null || !('productId' in line) || !('quantity' in line)) throw new Error('Product rows are invalid')
-        const productId = Number(line.productId)
-        const quantity = Number(line.quantity)
-        const amountValue = Number(line.amount)
-        const product = products.find((item) => item.id === productId)
-        const amount = Number.isFinite(amountValue) && amountValue >= 0 ? amountValue : (product ? product.price * quantity : 0)
-        if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isFinite(quantity) || quantity <= 0) throw new Error('Choose a product and enter a valid quantity for every row')
-        if (!Number.isFinite(amount) || amount < 0) throw new Error('Enter a valid amount for every row')
-        return { productId, quantity, amount }
-      })
-    } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Product rows are invalid')
+    if (!customer || !item || !Number.isFinite(amount) || amount <= 0) {
+      setToast('Enter a customer, items bought, and a valid amount')
       return
     }
-
-    const amount = lines.reduce((total, line) => total + line.amount, 0)
 
     try {
       const response = await fetch('/api/debts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idempotencyKey, customer, lines, amount, due: '30 days', createdAt: new Date().toISOString() }),
+        body: JSON.stringify({ idempotencyKey, customer, item, receiptNumber, amount, due: '30 days', createdAt: new Date().toISOString() }),
       })
 
       const result: unknown = await response.json().catch(() => null)
@@ -552,15 +538,10 @@ const formatCurrency = (amount: number) => {
       setModal(null)
       notify(
         `Debt added for ${savedDebt.customer}`,
-        `Invoice: ${savedDebt.invoice}. Total: ${money(savedDebt.amount, settings.currency)}. ${savedDebt.items.map((item) => `${item.name} × ${item.quantity ?? 1}`).join(', ')}. Stock was deducted.`,
+        `Invoice: ${savedDebt.invoice}. ${savedDebt.receiptNumber ? `Receipt RN: ${savedDebt.receiptNumber}. ` : ''}Total: ${money(savedDebt.amount, settings.currency)}. Items: ${savedDebt.items.map((item) => item.name).join(', ')}.`,
         true,
         { type: 'debt', amount: savedDebt.amount, currency: settings.currency, customer: savedDebt.customer, invoice: savedDebt.invoice, remaining: savedDebt.amount },
       )
-      try {
-        await refreshProducts()
-      } catch {
-        setToast('Debt saved and stock deducted, but inventory could not refresh. Reload the dashboard before the next stock operation.')
-      }
     } catch (error) {
       console.error('Failed to add debt:', error)
       setToast(error instanceof Error ? error.message : 'Debt could not be saved')
@@ -627,7 +608,7 @@ const formatCurrency = (amount: number) => {
   }
 }
 
-  const sectionHeading = section === 'New Stocks' ? 'Stock' : section === 'Store' ? 'Store' : section
+  const sectionHeading = section === 'New Stocks' ? 'Parking Shop' : section === 'Store' ? 'New Stocks' : section
 
   return (
     <div className={dark ? 'app-shell dark' : 'app-shell'}>
@@ -931,12 +912,8 @@ const formatCurrency = (amount: number) => {
 
         {modal && modal !== 'detail' && (
           <RecordModal
-            type={modal}
-            onClose={() => setModal(null)}
-            products={products}
-            productsLoading={productsLoading}
-            productsError={productsError}
-            currency={settings.currency}
+           type={modal}
+           onClose={() => setModal(null)}
            onSubmit={
               modal === 'product'
               ? addProduct
@@ -1574,12 +1551,12 @@ function Receipts({
 }
 
 function DebtTable({ debts, paid, onOpen, currency }: { debts: Debt[]; paid: boolean; onOpen: (d: Debt) => void; currency: string }) {
-  return <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Invoice</th><th>Amount</th><th>Remaining</th>
+  return <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Invoice</th><th>Receipt RN</th><th>Amount</th><th>Remaining</th>
   <th>{paid ? 'Paid at' : 'Due'}</th></tr></thead><tbody>{debts.map((d) => {
     const paidAmount = d.payments.reduce((a, p) => a + p.amount, 0)
     return <tr key={d.id} onClick={() => onOpen(d)} className="clickable-row"><td><div className="customer">
       <div className="avatar customer-avatar">{d.customer.slice(0, 2).toUpperCase()}</div><b>{d.customer}</b></div></td>
-      <td>{d.invoice}</td><td><b>{money(d.amount, currency )}</b></td>
+      <td>{d.invoice}</td><td>{d.receiptNumber || '—'}</td><td><b>{money(d.amount, currency )}</b></td>
       <td><b>{money(Math.max(0, d.amount - paidAmount), currency )}</b>
       <span className="progress"><i style={{ width: `${Math.min(100, (paidAmount / d.amount) * 100)}%` }} /></span></td>
       <td><span className="status-pill success">{paid ? d.paidAt : 'Open · ' + d.due}</span></td></tr>
@@ -1607,27 +1584,12 @@ function DebtDetail({
   const paidTotal = (draft.payments ?? []).reduce((total, payment) => total + Math.max(0, Number(payment.amount) || 0), 0)
   const balance = Math.max(0, (Number(draft.amount) || 0) - paidTotal)
 
-  const updateItem = (index: number, key: 'name' | 'price', value: string | number) => {
-    setDraft((current) => {
-      const items = current.items.map((item, row) => row === index ? {
-        ...item,
-        [key]: key === 'price' ? Math.max(0, Number(value) || 0) : value,
-      } : item)
-
-      const nextAmount = items.reduce((sum, item) => sum + Math.max(0, Number(item.price) || 0), 0)
-
-      return {
-        ...current,
-        items,
-        amount: nextAmount,
-      }
-    })
-  }
-
-  const addItem = () => {
+  const updateItemDescription = (index: number, value: string) => {
     setDraft((current) => ({
       ...current,
-      items: [...current.items, { name: '', price: 0, date: now() }],
+      items: current.items.map((item, row) =>
+        row === index ? { ...item, name: value } : item
+      ),
     }))
   }
 
@@ -1669,7 +1631,7 @@ function DebtDetail({
           <div>
             <div className="eyebrow">Debt detail</div>
             <h2>{draft.customer}</h2>
-            <p>{draft.invoice} · Created {draft.createdAt}</p>
+            <p>Invoice: {draft.invoice} · Receipt RN: {draft.receiptNumber || '—'} · Created {draft.createdAt}</p>
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close debt details">
             <X />
@@ -1686,19 +1648,31 @@ function DebtDetail({
               Original debt amount
               <input type="number" disabled={readOnly || isSavedDebt} value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: Number(event.target.value) })} />
             </label>
+            <label>
+              Receipt number (RN)
+              <input disabled={readOnly} value={draft.receiptNumber ?? ''} onChange={(event) => setDraft({ ...draft, receiptNumber: event.target.value })} maxLength={100} placeholder="Enter receipt number" />
+            </label>
           </div>
 
           <h3>Items bought</h3>
-          <div className="editable-list">
+          <div className="debt-item-notes">
             {draft.items.map((item, index) => {
-              const isExistingItem = index < debt.items.length
-              return <div className="editable-row" key={`debt-item-${index}`}>
-                <input type="text" disabled={readOnly || (isExistingItem && isSavedDebt)} value={item.name ?? ''} onChange={(event) => updateItem(index, 'name', event.target.value)} placeholder="Item name" />
-                <input type="number" disabled={readOnly || (isExistingItem && isSavedDebt)} value={item.price} onChange={(event) => updateItem(index, 'price', event.target.value)} placeholder="0" />
-                {item.date && <span className="item-date">{item.date}</span>}
-              </div>
+              const isOriginalSavedItem = isSavedDebt && index < debt.items.length
+
+              return (
+                <div className="debt-item-note-row" key={`debt-item-${index}`}>
+                  <textarea
+                    aria-label={`Item details ${index + 1}`}
+                    disabled={readOnly || isOriginalSavedItem}
+                    value={item.name ?? ''}
+                    onChange={(event) => updateItemDescription(index, event.target.value)}
+                    rows={2}
+                    maxLength={4000}
+                    placeholder="Describe the items bought"
+                  />
+                </div>
+              )
             })}
-            {!readOnly && <button type="button" className="secondary-button" onClick={addItem}><Plus />Add item</button>}
           </div>
 
           <h3>Part payments</h3>
@@ -1739,11 +1713,7 @@ function DebtDetail({
 }
 
 
-function DebtComposer({ products, productsLoading, productsError, currency, onClose, onSubmit }: {
-  products: Product[]
-  productsLoading: boolean
-  productsError: string
-  currency: string
+function DebtComposer({ onClose, onSubmit }: {
   onClose: () => void
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
 }) {
@@ -1752,13 +1722,9 @@ function DebtComposer({ products, productsLoading, productsError, currency, onCl
   const [amount, setAmount] = useState('')
   const idempotencyRef = useRef<HTMLInputElement>(null)
 
-  const matchedProduct = products.find(
-    (product) => product.name.trim().toLowerCase() === item.trim().toLowerCase()
-  )
   const amountValue = Number(amount)
-  const validAmount = amount.trim() !== '' && Number.isFinite(amountValue) && amountValue > 0
-  const canSubmit = customer.trim().length > 0 && !!matchedProduct &&
-    validAmount && matchedProduct.stock >= 1 && !productsLoading && !productsError
+  const canSubmit = customer.trim().length > 0 && item.trim().length > 0 &&
+    amount.trim() !== '' && Number.isFinite(amountValue) && amountValue > 0
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     if (!canSubmit) {
@@ -1784,23 +1750,16 @@ function DebtComposer({ products, productsLoading, productsError, currency, onCl
         <label>Customer name
           <input name="customer" value={customer} onChange={(event) => { setCustomer(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} maxLength={120} required placeholder="e.g. Harbor Market" />
         </label>
-        <label>Item bought
-          <input name="item" list="debt-catalog-products" value={item} onChange={(event) => { setItem(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required placeholder="Enter a catalog product name" autoComplete="off" />
-          <datalist id="debt-catalog-products">
-            {products.filter((product) => product.status.toLowerCase() !== 'discontinued').map((product) =>
-              <option key={product.id} value={product.name} />
-            )}
-          </datalist>
+        <label>Items bought
+          <textarea name="item" value={item} onChange={(event) => { setItem(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required rows={5} maxLength={4000} placeholder="Describe the items bought" />
+        </label>
+        <label>Receipt number (RN)
+          <input name="receiptNumber" maxLength={100} placeholder="Enter receipt number" onChange={() => { if (idempotencyRef.current) idempotencyRef.current.value = '' }} />
         </label>
         <label>Amount
           <input name="amount" type="number" min="0.01" max="1000000000" step="0.01" value={amount} onChange={(event) => { setAmount(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required placeholder="0.00" />
         </label>
-        <input type="hidden" name="lines" value={JSON.stringify(matchedProduct ? [{ productId: matchedProduct.id, quantity: 1, amount: validAmount ? amountValue : 0 }] : [])} />
         <input type="hidden" name="idempotencyKey" ref={idempotencyRef} defaultValue="" />
-        {productsLoading && <p role="status">Loading stock products…</p>}
-        {productsError && <p className="prototype-feedback error" role="alert">{productsError}</p>}
-        {!productsLoading && !productsError && item.trim() && !matchedProduct && <p className="prototype-feedback error" role="alert">Choose a product name from the catalog suggestions.</p>}
-        {matchedProduct && matchedProduct.stock < 1 && <p className="prototype-feedback error" role="alert">This product is out of stock.</p>}
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
           <button className="primary-button" type="submit" disabled={!canSubmit}><Check />Save record</button>
@@ -1810,8 +1769,8 @@ function DebtComposer({ products, productsLoading, productsError, currency, onCl
   </div>
 }
 
-function RecordModal({ type, onClose, onSubmit, products, productsLoading, productsError, currency }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void; products: Product[]; productsLoading: boolean; productsError: string; currency: string }) {
-  if (type === 'debt') return <DebtComposer products={products} productsLoading={productsLoading} productsError={productsError} currency={currency} onClose={onClose} onSubmit={onSubmit} />
+function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
+  if (type === 'debt') return <DebtComposer onClose={onClose} onSubmit={onSubmit} />
   return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}>
     <div className="modal">
       <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>

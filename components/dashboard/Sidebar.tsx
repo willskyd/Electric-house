@@ -52,7 +52,7 @@ export function Sidebar({
       <nav>
         {nav.map(({ label }) => {
           const Icon = iconMap[label as keyof typeof iconMap] || LayoutDashboard
-          const displayLabel = label === 'New Stocks' ? 'Stock' : label === 'Store' ? 'Store' : label
+          const displayLabel = label === 'New Stocks' ? 'Parking Shop' : label === 'Store' ? 'New Stocks' : label
           return (
             <button key={label} className={section === label ? 'nav-item active' : 'nav-item'} onClick={() => onGo(label as Section)} title={!sidebar ? displayLabel : undefined}>
               <Icon />
