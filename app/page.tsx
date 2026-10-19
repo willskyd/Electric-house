@@ -631,7 +631,7 @@ const formatCurrency = (amount: number) => {
 
   return (
     <div className={dark ? 'app-shell dark' : 'app-shell'}>
-      <Sidebar section={section} sidebar={sidebar} settings={settings} onGo={go} onClose={() => setSidebar(false)} />
+      <Sidebar section={section} sidebar={sidebar} settings={settings} onGo={go} onClose={() => setSidebar(false)} onSignOut={signOut} />
 
       <main className="main-content">
         <Topbar
@@ -641,10 +641,16 @@ const formatCurrency = (amount: number) => {
           menuOpen={menuOpen}
           activities={activities}
           onToggleTheme={() => setDark(!dark)}
-          onToggleNotifications={() => setNotifications(!notifications)}
+          onToggleNotifications={() => {
+            setNotifications((open) => !open)
+            setMenuOpen(false)
+          }}
           onOpenInbox={openInbox}
           onOpenSection={go}
-          onToggleMenu={() => setMenuOpen(!menuOpen)}
+          onToggleMenu={() => {
+            setMenuOpen((open) => !open)
+            setNotifications(false)
+          }}
           onSignOut={signOut}
           onViewNotification={viewNotification}
         />

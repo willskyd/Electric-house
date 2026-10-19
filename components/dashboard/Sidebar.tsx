@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Boxes, ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, Package, Settings, Sparkles, Store, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Boxes, ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, LogOut, Package, Settings, Sparkles, Store, Users, X } from 'lucide-react'
 
 import type { Section } from './types'
 import { nav } from './data'
@@ -21,12 +21,14 @@ export function Sidebar({
   settings,
   onGo,
   onClose,
+  onSignOut,
 }: {
   section: Section
   sidebar: boolean
   settings: { workspace: string }
   onGo: (section: Section) => void
   onClose?: () => void
+  onSignOut: () => void
 }) {
   return (
     <aside className={`sidebar ${sidebar ? '' : 'sidebar-collapsed'}`}>
@@ -71,7 +73,6 @@ export function Sidebar({
           <Users />
           {sidebar && <span>Team members</span>}
         </button>
-
         <div className="help-card">
           {sidebar && <>
             <Sparkles />
@@ -81,6 +82,15 @@ export function Sidebar({
             </div>
           </>}
         </div>
+        <button
+          className="nav-item sidebar-sign-out"
+          onClick={onSignOut}
+          title={!sidebar ? 'Sign out' : undefined}
+          aria-label="Sign out"
+        >
+          <LogOut />
+          {sidebar && <span>Sign out</span>}
+        </button>
       </div>
     </aside>
   )

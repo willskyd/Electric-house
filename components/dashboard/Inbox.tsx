@@ -187,6 +187,8 @@ const filteredHistory = useMemo(() => {
   typeFilter,
   dateFilter,
 ]) 
+
+const historyActivities = hasActiveFilter ? filteredHistory : olderActivities
  
 
   const unreadCount = activities.filter(
@@ -308,7 +310,7 @@ const filteredHistory = useMemo(() => {
           )}
         </div>
 
-        <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+        <div className="grid min-w-0 grid-cols-1 gap-4">
           <div className="min-w-0 space-y-2">
             {latestActivities.length > 0 ? (
               latestActivities.map(renderActivity) 
@@ -491,7 +493,7 @@ const filteredHistory = useMemo(() => {
 
            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
          {hasActiveFilter
-          ? `${filteredHistory.length} matching notification${filteredHistory.length === 1 ? '' : 's'} found.`
+          ? `${historyActivities.length} matching notification${historyActivities.length === 1 ? '' : 's'} found.`
          : 'Search and filter your complete notification history without deleting anything.'}
          </p>
           </div>
@@ -532,12 +534,12 @@ const filteredHistory = useMemo(() => {
             </select>
           </div>
 
-          <div className="mt-4 space-y-2">
-            {filteredHistory.length > 0 ? (
-              filteredHistory.map(renderActivity)
+          <div className="mt-4 max-h-[1000px] space-y-2 overflow-y-auto overscroll-contain pr-1">
+            {historyActivities.length > 0 ? (
+              historyActivities.map(renderActivity)
             ) : (
               <div className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700">
-                No matching older notifications found.
+                {hasActiveFilter ? 'No matching notifications found.' : 'No older notifications.'}
               </div>
             )}
           </div>
