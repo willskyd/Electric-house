@@ -244,7 +244,7 @@ const filteredHistory = useMemo(() => {
       </div>
 
       {item.detail && (
-        <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+        <p className="mt-2 line-clamp-2 break-words text-xs leading-5 text-slate-500 dark:text-slate-400">
           {item.detail}
         </p>
       )}
@@ -252,7 +252,7 @@ const filteredHistory = useMemo(() => {
   )
 
   return (
-<section className="inbox-section mb-20 space-y-5 rounded-2xl border border-slate-500 bg-white p-4 shadow-sm md:p-6 dark:border-slate-700 dark:bg-[#163d25]">      {/* Header */}
+<section className="inbox-section mb-20 w-full min-w-0 max-w-full space-y-5 rounded-2xl border border-slate-500 bg-white p-4 shadow-sm md:p-6 dark:border-slate-700 dark:bg-[#163d25]">      {/* Header */}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
          <div className="inbox-title text-[11px] font-semibold uppercase tracking-[0.2em]">
@@ -308,10 +308,10 @@ const filteredHistory = useMemo(() => {
           )}
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
-          <div className="space-y-2">
+        <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+          <div className="min-w-0 space-y-2">
             {latestActivities.length > 0 ? (
-              latestActivities.map(renderActivity)
+              latestActivities.map(renderActivity) 
             ) : (
               <div className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700">
                 No notifications yet.
@@ -320,7 +320,7 @@ const filteredHistory = useMemo(() => {
           </div>
 
           {/* Details */}
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/60">
+          <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/60">
             {selectedInbox ? (
               <>
                 <div className="mb-4 flex items-center justify-between gap-3">
@@ -336,7 +336,7 @@ const filteredHistory = useMemo(() => {
                   )}
                 </div>
 
-                <h3 className="text-xl font-semibold text-slate-900 dark:text-white">
+                <h3 className="break-words text-xl font-semibold text-slate-900 dark:text-white">
                   {selectedInbox.text}
                 </h3>
 
@@ -350,7 +350,7 @@ const filteredHistory = useMemo(() => {
                   </div>
 
                   <div className="space-y-3">
-                    <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">
+                    <p className="break-words text-sm leading-6 text-slate-600 dark:text-slate-300">
                       {selectedInbox.detail ??
                         'No additional message details available.'}
                     </p>
@@ -363,7 +363,7 @@ const filteredHistory = useMemo(() => {
                               Customer
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {selectedInbox.customer}
                             </div>
                           </div>
@@ -375,7 +375,7 @@ const filteredHistory = useMemo(() => {
                               Invoice
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {selectedInbox.invoice}
                             </div>
                           </div>
@@ -387,7 +387,7 @@ const filteredHistory = useMemo(() => {
                               Amount paid
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {money(
                                 selectedInbox.amount,
                                 selectedInbox.currency
@@ -402,7 +402,7 @@ const filteredHistory = useMemo(() => {
                               Remaining balance
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {money(
                                 selectedInbox.remaining,
                                 selectedInbox.currency
@@ -422,7 +422,7 @@ const filteredHistory = useMemo(() => {
                               Product
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {selectedInbox.product}
                             </div>
                           </div>
@@ -434,7 +434,7 @@ const filteredHistory = useMemo(() => {
                               Quantity
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {selectedInbox.quantity} units
                             </div>
                           </div>
@@ -446,7 +446,7 @@ const filteredHistory = useMemo(() => {
                               Invoice
                             </div>
 
-                            <div className="mt-1 font-medium text-slate-900 dark:text-white">
+                            <div className="mt-1 break-words font-medium text-slate-900 dark:text-white">
                               {selectedInbox.invoice}
                             </div>
                           </div>
@@ -458,7 +458,7 @@ const filteredHistory = useMemo(() => {
                               Activity details
                             </div>
 
-                            <div className="mt-1 text-sm leading-6 text-slate-700 dark:text-slate-200">
+                            <div className="mt-1 break-words text-sm leading-6 text-slate-700 dark:text-slate-200">
                               {selectedInbox.detail}
                             </div>
                           </div>
@@ -497,13 +497,13 @@ const filteredHistory = useMemo(() => {
           </div>
 
           {/* Search and filters */}
-          <div className="grid gap-3 md:grid-cols-[1fr,180px,180px]">
+          <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr),180px,180px]">
             <input
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search notifications..."
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              className="w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
             />
 
             <select
