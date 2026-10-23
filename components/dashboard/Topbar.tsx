@@ -33,7 +33,7 @@ export function Topbar({
   const latestActivities = activities.slice(0, 6)
 
   return (
-    <header className="h-16 border-b border-slate-200 bg-white/90 backdrop-blur-sm md:h-[72px]  dark:border-slate-700  dark:bg-[#163d25]/90">
+    <header className="relative z-50 h-16 border-b border-slate-200 bg-white/90 backdrop-blur-sm md:h-[72px]  dark:border-slate-700  dark:bg-[#163d25]/90">
       <div className="flex h-full items-center gap-3 px-4 md:px-8">
         <a href="/">
         <div className="flex items-center gap-2 md:gap-3">
@@ -127,7 +127,7 @@ export function Topbar({
       </div>
 
       {menuOpen && (
-        <div className="absolute right-1 top-16 z-50 w-[280px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl md:hidden dark:border-slate-700 dark:bg-[#163d25]">
+        <div className="absolute right-0 top-16 z-50 w-[280px] rounded-br-none rounded-t-none rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl md:hidden dark:border-slate-700 dark:bg-[#163d25]">
           <div className="mb-3 flex items-center gap-3 rounded-xl bg-slate-100 px-3 py-2 dark:bg-green-800">
             <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-200 dark:bg-green-700 dark:text-slate-100">AM</div>
             <div>

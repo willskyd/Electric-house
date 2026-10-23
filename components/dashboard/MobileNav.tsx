@@ -42,7 +42,8 @@ export function MobileNav({
   ]
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white/95 px-3 pb-3 pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-md md:hidden dark:border-slate-700 dark:bg-[#163d25]/95">
+    <nav className="fixed bottom-0 left-0  right-0 z-40 border-t border-slate-200 bg-white/95 px-3 pb-3 pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-md 
+    md:hidden dark:border-slate-700 dark:bg-[#163d25]/95">
       <div className="mx-auto grid max-w-md grid-cols-5 items-end gap-1">
         {items.map((item) => {
           const active = section === item.section
