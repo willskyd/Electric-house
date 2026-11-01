@@ -1,24 +1,68 @@
+'use client'
+
+import { useState } from 'react'
 import { LogIn, Store } from 'lucide-react'
 
-export function LoginScreen({ onSignIn }: { onSignIn: () => void }) {
+export function LoginScreen({
+  onSignIn,
+  checking = false,
+}: {
+  onSignIn: (identifier: string, password: string) => Promise<void>
+  checking?: boolean
+}) {
+  const [identifier, setIdentifier] = useState('adminmicro.com')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setSubmitting(true)
+    try {
+      await onSignIn(identifier, password)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div className="login-screen">
       <div className="login-card">
         <div className="brand-mark"><Store /></div>
-        <div className="eyebrow">Acme Market workspace</div>
-        <h1>Welcome back</h1>
-        <p>Sign in to manage your inventory and customer accounts.</p>
-        <form onSubmit={(e) => { e.preventDefault(); onSignIn() }}>
+        <div className="eyebrow">Micro-MEC Admin</div>
+        <h1>{checking ? 'Checking your session' : 'Welcome back'}</h1>
+        <p>{checking ? 'Verifying your sign-in…' : 'Sign in to manage your stock and customer accounts.'}</p>
+        {!checking && <form onSubmit={submit}>
           <label>
-            Email
-            <input type="email" defaultValue="admin@acmemarket.com" required />
+            Admin email or username
+            <input
+              type="text"
+              name="identifier"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+              autoComplete="username"
+              required
+            />
           </label>
           <label>
             Password
-            <input type="password" defaultValue="password" required />
+            <input
+              type="password"
+              name="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              required
+            />
           </label>
-          <button className="primary-button" type="submit"><LogIn />Sign in</button>
-        </form>
+          {error && <p className="login-error" role="alert">{error}</p>}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            <LogIn />{submitting ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>}
       </div>
     </div>
   )

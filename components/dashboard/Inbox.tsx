@@ -3,6 +3,29 @@ import type { Dispatch, SetStateAction } from 'react'
 import { useMemo, useState } from 'react'
 import { money } from './utils'
 import { FiCheck, FiClock } from 'react-icons/fi'
+import { saveLocalRecordAndOperation, shouldAttemptServerRequest, writeLocalRecord } from '@/lib/offline-queue'
+
+export async function persistRead(activity: Activity) {
+  const operationId = crypto.randomUUID()
+  const updated = { ...activity, read: true }
+  const payload = { read: true, operationId }
+  let response: Response | null = null
+  if (shouldAttemptServerRequest()) {
+    try { response = await fetch(`/api/activities/${activity.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+    catch (error) { if (!(error instanceof TypeError)) throw error }
+  }
+  if (response?.ok) {
+    const saved = await response.json().catch(() => updated)
+    await writeLocalRecord('activities', activity.id, saved, false)
+    return
+  }
+  if (response) {
+    const result = await response.json().catch(() => null)
+    throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to mark notification as read')
+  }
+  await saveLocalRecordAndOperation('activities', activity.id, updated, { id: operationId, type: 'activity.read', label: `Mark activity ${activity.id} as read`, target: `/api/activities/${activity.id}`, method: 'PATCH', payload, recordCollection: 'activities', recordId: activity.id })
+  window.dispatchEvent(new Event('micro-mec-queue-changed'))
+}
 
 export function Inbox({
   activities,
@@ -32,17 +55,7 @@ export function Inbox({
     setSelectedInbox({ ...activity, read: true })
 
     try {
-      const response = await fetch(`/api/activities/${activity.id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ read: true }),
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to mark notification as read')
-      }
+      await persistRead(activity)
     } catch (error) {
       console.error('Failed to mark notification as read:', error)
     }
@@ -62,17 +75,7 @@ export function Inbox({
     try {
       const unreadActivities = activities.filter((item) => !item.read)
 
-      await Promise.all(
-        unreadActivities.map((activity) =>
-          fetch(`/api/activities/${activity.id}`, {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ read: true }),
-          })
-        )
-      )
+      await Promise.all(unreadActivities.map((activity) => persistRead(activity)))
     } catch (error) {
       console.error('Failed to mark all notifications as read:', error)
     }

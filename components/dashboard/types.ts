@@ -1,4 +1,4 @@
-export type Section = 'Overview' | 'Stocks' | 'New Stocks' | 'Store' | 'Transfers' | 'Debt' | 'Paid' | 'Settings' | 'Team members' | 'Inbox' | 'POS'
+export type Section = 'Overview' | 'Stocks' | 'New Stocks' | 'Store' | 'Transfers' | 'Debt' | 'Paid' | 'Pending' | 'Returns' | 'Sync Center' | 'Settings' | 'Team members' | 'Inbox' | 'POS'
 
 export type Product = {
   id: number
@@ -10,6 +10,8 @@ export type Product = {
   stock: number
   price: number
   status: string
+  revision?: number
+  reservedStock?: number
 }
 
 export type StoreReceivingRecord = {
@@ -40,6 +42,7 @@ export type PrototypeBranch = {
   id: string
   name: string
   createdAt: string
+  revision?: number
 }
 
 export type PrototypeTransferLine = {
@@ -100,6 +103,7 @@ export type Debt = {
   createdAt: string
   stockAdjusted?: boolean
   paidAt?: string
+  revision?: number
 }
 
 export type Activity = {
@@ -125,6 +129,7 @@ export type Receipt = {
   quantity: number
   invoice: string
   date: string
+  revision?: number
 }
 
 export type SaleLine = {
@@ -154,4 +159,27 @@ export type Sale = {
     amountTenderedMinor: number
     changeMinor: number
   }
+  customerName?: string
+  customerPhone?: string
+  pendingOrderId?: string
+  pendingOrderReference?: string
+  localPending?: boolean
+}
+
+export type PendingOrderStatus = 'Pending' | 'Accepted' | 'Rejected'
+export type PendingOrderLine = { productId: number; name: string; sku: string; barcode?: string; quantity: number; unitPriceMinor: number; lineTotalMinor: number }
+export type PendingOrder = {
+  id: string
+  reference: string
+  status: PendingOrderStatus
+  customerName: string
+  customerPhone: string
+  createdAt: string
+  items: PendingOrderLine[]
+  subtotalMinor: number
+  totalMinor: number
+  history: Array<{ at: string; actor: string; event: string; detail?: string }>
+  sale?: Sale
+  rejectionReason?: string
+  localPending?: boolean
 }

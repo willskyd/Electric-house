@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Bell, Boxes, ChevronRight, Inbox, LogOut, Menu, Moon, Sun, Store } from 'lucide-react'
+import { ArrowLeftRight, Bell, ChevronRight, Clock3, ClipboardList, Inbox, LogOut, Menu, Moon, RefreshCw, RotateCcw, Sun, Store } from 'lucide-react'
 
 import type { Activity, Section } from './types'
 
@@ -8,6 +8,7 @@ export function Topbar({
   notifications,
   menuOpen,
   activities,
+  pendingCount = 0,
   onToggleTheme,
   onToggleNotifications,
   onOpenInbox,
@@ -21,6 +22,7 @@ export function Topbar({
   notifications: boolean
   menuOpen: boolean
   activities: Activity[]
+  pendingCount?: number
   onToggleTheme: () => void
   onToggleNotifications: () => void
   onOpenInbox: () => void
@@ -31,6 +33,7 @@ export function Topbar({
 }) {
   const unreadCount = activities.filter((item) => !item.read).length
   const latestActivities = activities.slice(0, 6)
+  const adminPhone = (process.env.NEXT_PUBLIC_ADMIN_PHONE ?? '').replace(/[^\d+]/g, '')
 
   return (
     <header className="relative z-50 h-16 border-b border-slate-200 bg-white/90 backdrop-blur-sm md:h-[72px]  dark:border-slate-700  dark:bg-[#163d25]/90">
@@ -47,7 +50,7 @@ export function Topbar({
         <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex">
           <span>Workspace</span>
           <ChevronRight className="h-3.5 w-3.5" />
-          <b className="text-sm text-slate-900 dark:text-slate-100">{section === 'New Stocks' ? 'Parking Shop' : section === 'Store' ? 'New Stocks' : section}</b>
+          <b className="text-sm text-slate-900 dark:text-slate-100">{section}</b>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
@@ -141,9 +144,18 @@ export function Topbar({
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-bold text-slate-700 dark:bg-slate-700 dark:text-slate-100">AM</span>
               Profile
             </button> */}
-            <button type="button" aria-current={section === 'Store' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-600 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Store' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Store'); }}>
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><Boxes className="h-4 w-4" /></span>
-              Store
+            <button type="button" aria-current={section === 'Pending' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Pending' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Pending'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><Clock3 className="h-4 w-4" /></span>
+              <span className="flex-1">Pending</span>{pendingCount > 0 && <b className="rounded-full bg-red-600 px-2 py-0.5 text-xs text-white">{pendingCount > 99 ? '99+' : pendingCount}</b>}
+            </button>
+            <button type="button" aria-current={section === 'Returns' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Returns' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Returns'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><RotateCcw className="h-4 w-4" /></span>Returns
+            </button>
+            <button type="button" aria-current={section === 'Sync Center' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Sync Center' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Sync Center'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><RefreshCw className="h-4 w-4" /></span>Sync
+            </button>
+            <button type="button" aria-current={section === 'New Stocks' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'New Stocks' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('New Stocks'); }}>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><ClipboardList className="h-4 w-4" /></span>Parking Shop
             </button>
             <button type="button" aria-current={section === 'Transfers' ? 'page' : undefined} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-600 dark:text-slate-200 dark:hover:bg-slate-800 ${section === 'Transfers' ? 'bg-slate-100 font-semibold dark:bg-slate-800' : ''}`} onClick={() => { onToggleMenu(); onOpenSection('Transfers'); }}>
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-slate-700 dark:bg-green-700 dark:text-slate-100"><ArrowLeftRight className="h-4 w-4" /></span>
@@ -157,10 +169,15 @@ export function Topbar({
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-green-700 dark:text-slate-100">👥</span>
               Team members
             </button>
-            <button type="button" className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => { onToggleMenu(); onOpenInbox(); }}>
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-green-700 dark:text-slate-100">✉</span>
-              Need a hand? Contact your admin
-            </button>
+            {adminPhone
+              ? <a href={`tel:${adminPhone}`} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800">
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-semibold text-slate-700 dark:bg-green-700 dark:text-slate-100">☎</span>
+                  Call your admin
+                </a>
+              : <span className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-500 dark:text-slate-400">
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-slate-200 text-xs font-semibold dark:bg-green-700">☎</span>
+                  Set admin phone to enable calls
+                </span>}
             <button type="button" className="mt-2 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-700 transition hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => { onToggleMenu(); onSignOut(); }}>
               <LogOut className="h-4 w-4" />
               Sign out

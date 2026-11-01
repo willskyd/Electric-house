@@ -3,8 +3,7 @@ import type { Section } from './types'
 import { BiStar } from 'react-icons/bi'
 import { GiMoneyStack, GiShoppingCart } from 'react-icons/gi'
 import { FaSackDollar } from 'react-icons/fa6'
-import { RiWirelessChargingFill } from 'react-icons/ri'
-import { FiPlusCircle } from 'react-icons/fi'
+import { Boxes } from 'lucide-react'
 
 export function MobileNav({
   section,
@@ -34,17 +33,13 @@ export function MobileNav({
       section: 'Paid',
       icon: GiMoneyStack,
     },
-    {
-      label: 'Parking Shop',
-      section: 'New Stocks',
-      icon: FiPlusCircle,
-    },
+    { label: 'Store', section: 'Store', icon: Boxes },
   ]
 
   return (
     <nav className="fixed bottom-0 left-0  right-0 z-40 border-t border-slate-200 bg-white/95 px-3 pb-3 pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur-md 
     md:hidden dark:border-slate-700 dark:bg-[#163d25]/95">
-      <div className="mx-auto grid max-w-md grid-cols-5 items-end gap-1">
+      <div className="mx-auto grid max-w-2xl grid-cols-5 items-end gap-1">
         {items.map((item) => {
           const active = section === item.section
           const Icon = item.icon

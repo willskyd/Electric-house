@@ -19,6 +19,7 @@ import {
   Menu,
   MoreHorizontal,
   Package,
+  Printer,
   Plus,
   Search,
   Settings,
@@ -37,17 +38,21 @@ import {
 import { Sidebar } from '../components/dashboard/Sidebar'
 import { Topbar } from '../components/dashboard/Topbar'
 import MobileNav from '../components/dashboard/MobileNav'
-import Inbox from '../components/dashboard/Inbox'
+import Inbox, { persistRead } from '../components/dashboard/Inbox'
 import { LoginScreen } from '../components/dashboard/LoginScreen'
 import { OverviewSection } from '../components/dashboard/sections/OverviewSection'
 import { StoreSection } from '../components/dashboard/sections/StoreSection'
 import { TransfersSection } from '../components/dashboard/sections/TransfersSection'
 import { useStoreTransfersPrototype } from '../components/dashboard/useStoreTransfersPrototype'
 import { PosCart } from '../components/dashboard/PosCart'
+import { ReturnsSection } from '../components/dashboard/sections/ReturnsSection'
+import { PendingOrdersSection } from '../components/dashboard/sections/PendingOrdersSection'
+import { SyncCenter } from '../components/dashboard/sections/SyncCenter'
 import { SearchableProductSelect } from '../components/dashboard/SearchableProductSelect'
 import { initialActivities, initialDebts, initialProducts } from '../components/dashboard/data'
-import type { Activity, Debt, Product, Payment, Receipt, Section } from '../components/dashboard/types'
+import type { Activity, Debt, PendingOrder, Product, Payment, Receipt, Sale, Section } from '../components/dashboard/types'
 import { money, now, Stat, daysAgo } from '../components/dashboard/utils'
+import { cacheServerCollection, deleteLocalRecord, listQueuedOperations, readLocalCollection, saveLocalDeletionAndOperation, saveLocalRecordAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '../lib/offline-queue'
 
 function isProductList(value: unknown): value is Product[] {
   return Array.isArray(value) && value.every((item: unknown) =>
@@ -66,11 +71,14 @@ function isProductList(value: unknown): value is Product[] {
 
 export default function Page() {
   const [section, setSection] = useState<Section>('Overview')
-  const prototypeData = useStoreTransfersPrototype()
   const [products, setProducts] = useState<Product[]>([])
+  const prototypeData = useStoreTransfersPrototype((updates) => setProducts((current) => current.map((product) => updates.find((updated) => updated.id === product.id) ?? product)))
   const [productsLoading, setProductsLoading] = useState(true)
   const [productsError, setProductsError] = useState('')
+  const [connectionState, setConnectionState] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [dashboardErrors, setDashboardErrors] = useState<string[]>([])
   const [debts, setDebts] = useState<Debt[]>([])
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([])
   const [overviewSalesMinor, setOverviewSalesMinor] = useState<number | null>(null)
   const [receipts, setReceipts] = useState<Receipt[]>([])
   const [deleteProduct, setDeleteProduct] = useState<Product | null>(null)
@@ -80,21 +88,44 @@ export default function Page() {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [dark, setDark] = useState(false)
-  const [settings, setSettings] = useState({ workspace: 'Acme Market', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
+  const [settings, setSettings] = useState({ workspace: 'Micro-MEC', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
+  const settingsRevision = useRef(0)
   const [sidebar, setSidebar] = useState(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
   const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
   const [selectedDebt, setSelectedDebt] = useState<Debt | null>(null)
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
   const [notifications, setNotifications] = useState(false)
-  const [signedIn, setSignedIn] = useState(true)
+  const [signedIn, setSignedIn] = useState(false)
+  const [authChecking, setAuthChecking] = useState(true)
   const [activities, setActivities] = useState<Activity[]>([])
   const [selectedInbox, setSelectedInbox] = useState<Activity | null>(null)
+  const pendingPrinter = useRef<((sale: Sale) => Promise<void>) | null>(null)
+  const pendingCount = pendingOrders.filter((order) => order.status === 'Pending').length
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/session', { cache: 'no-store' })
+      .then(async (response) => {
+        const result: unknown = await response.json().catch(() => null)
+        if (!response.ok || typeof result !== 'object' || result === null || !('authenticated' in result) || typeof result.authenticated !== 'boolean') {
+          throw new Error('Admin session could not be verified')
+        }
+        if (!cancelled) setSignedIn(result.authenticated)
+      })
+      .catch((error: unknown) => {
+        console.error('Could not verify admin session:', error)
+        if (!cancelled) setSignedIn(false)
+      })
+      .finally(() => { if (!cancelled) setAuthChecking(false) })
+    return () => { cancelled = true }
+  }, [])
 
   const refreshProducts = async () => {
     const response = await fetch('/api/products', { cache: 'no-store' })
     const result: unknown = await response.json().catch(() => null)
     if (!response.ok || !isProductList(result)) throw new Error('Inventory could not be refreshed. Reload before another stock operation.')
+    await cacheServerCollection('products', result as Array<Product & Record<string, unknown>>)
     setProducts(result)
     setProductsError('')
     return result
@@ -126,72 +157,114 @@ export default function Page() {
   }, [hydrated, products, debts, activities])
 
  useEffect(() => {
+  if (authChecking || !signedIn) return
   let cancelled = false
 
-  async function loadProducts() {
+  async function hydrateLocalData() {
     try {
-      const response = await fetch('/api/products')
-      if (!response.ok) throw new Error('Product inventory request failed')
-      const data: unknown = await response.json()
-      if (!isProductList(data)) throw new Error('Product inventory returned invalid data')
+      const [cachedProducts, cachedDebts, cachedReceipts, cachedActivities, cachedSettings, cachedPendingOrders] = await Promise.all([
+        readLocalCollection<Product>('products'),
+        readLocalCollection<Debt>('debts'),
+        readLocalCollection<Receipt>('receipts'),
+        readLocalCollection<Activity>('activities'),
+        readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings'),
+        readLocalCollection<PendingOrder>('pendingOrders'),
+      ])
+      let saved: Record<string, unknown> | null = null
+      try { saved = JSON.parse(localStorage.getItem('micro-mec-state') || 'null') as Record<string, unknown> | null } catch { saved = null }
+      const legacyProducts = cachedProducts.length ? cachedProducts : Array.isArray(saved?.products) ? saved.products as Product[] : []
+      const legacyDebts = cachedDebts.length ? cachedDebts : Array.isArray(saved?.debts) ? saved.debts as Debt[] : []
+      const legacyActivities = cachedActivities.length ? cachedActivities : Array.isArray(saved?.activities) ? saved.activities as Activity[] : []
+      if (!cachedProducts.length && legacyProducts.length) await cacheServerCollection('products', legacyProducts as Array<Product & Record<string, unknown>>)
+      if (!cachedDebts.length && legacyDebts.length) await cacheServerCollection('debts', legacyDebts as Array<Debt & Record<string, unknown>>)
+      if (!cachedActivities.length && legacyActivities.length) await cacheServerCollection('activities', legacyActivities as Array<Activity & Record<string, unknown>>)
       if (cancelled) return
-      setProducts(data)
-      setProductsError('')
+      setProducts(legacyProducts); setDebts(legacyDebts); setReceipts(cachedReceipts); setActivities(legacyActivities)
+      setPendingOrders(cachedPendingOrders)
+      if (cachedSettings[0]?.settings) { settingsRevision.current = cachedSettings[0].revision ?? 0; setSettings((current) => ({ ...current, ...cachedSettings[0].settings })) }
+      if (legacyActivities.length) setSelectedInbox(legacyActivities[0])
     } catch (error) {
-      console.error('Failed to load products:', error)
-      if (!cancelled) {
-        setProductsError('Inventory could not be loaded. Reload the dashboard before scanning or checking out.')
-      }
+      console.error('Could not hydrate local dashboard data:', error)
+      if (!cancelled) setDashboardErrors((items) => [...items, 'Local cache is unavailable; changes cannot be stored offline in this browser.'])
     } finally {
-      if (!cancelled) setProductsLoading(false)
+      if (!cancelled) { hasLoadedState.current = true; setHydrated(true); setProductsLoading(false) }
     }
   }
 
   async function loadOtherDashboardData() {
-    try {
-      const [debtsRes, receiptsRes, activitiesRes] = await Promise.all([
-        fetch('/api/debts'),
-        fetch('/api/receipts'),
-        fetch('/api/activities'),
-      ])
-
-      if (!debtsRes.ok || !receiptsRes.ok || !activitiesRes.ok) {
-        throw new Error('Dashboard data request failed')
+    if (!navigator.onLine) { setConnectionState('offline'); return }
+    setConnectionState('online')
+    const errors: string[] = []
+    const loadCollection = async <T extends Record<string, unknown>>(path: string, collection: string, apply: (rows: T[]) => void, validate: (value: unknown) => value is T[]) => {
+      try {
+        const response = await fetch(path, { cache: 'no-store' })
+        if (!response.ok) throw new Error(`${path} returned HTTP ${response.status}`)
+        const body: unknown = await response.json()
+        if (!validate(body)) throw new Error(`${path} returned invalid data`)
+        await cacheServerCollection(collection, body)
+        const merged = await readLocalCollection<T>(collection)
+        if (!cancelled) apply(merged)
+      } catch (error) {
+        console.warn(`Dashboard refresh failed for ${collection}; keeping the local cache`, error)
+        errors.push(collection)
       }
-
-      const [debtsData, receiptsData, activitiesData] = await Promise.all([
-        debtsRes.json(),
-        receiptsRes.json(),
-        activitiesRes.json(),
-      ])
-      if (cancelled) return
-
-      setDebts(Array.isArray(debtsData) ? debtsData : [])
-      setReceipts(Array.isArray(receiptsData) ? receiptsData : [])
-      setActivities(Array.isArray(activitiesData) ? activitiesData : [])
-
-      if (Array.isArray(activitiesData) && activitiesData.length > 0) {
-        setSelectedInbox(activitiesData[0])
-      }
-    } catch (error) {
-      console.error('Failed to load other dashboard data:', error)
+    }
+    await Promise.all([
+      loadCollection('/api/products', 'products', (rows) => { setProducts(rows); setProductsError('') }, isProductList as (value: unknown) => value is Array<Product & Record<string, unknown>>),
+      loadCollection('/api/debts', 'debts', setDebts, Array.isArray),
+      loadCollection('/api/receipts', 'receipts', setReceipts, Array.isArray),
+      loadCollection('/api/activities', 'activities', (rows) => { setActivities(rows); if (rows.length) setSelectedInbox((current) => current ?? rows[0]) }, Array.isArray),
+      loadCollection('/api/pending-orders', 'pendingOrders', setPendingOrders, Array.isArray),
+      (async () => {
+        try {
+          const response = await fetch('/api/settings', { cache: 'no-store' })
+          if (!response.ok) throw new Error(`Settings returned HTTP ${response.status}`)
+          const value = await response.json()
+          if (!value || typeof value !== 'object') throw new Error('Settings response is invalid')
+          settingsRevision.current = typeof value.revision === 'number' ? value.revision : 0
+          const { revision, ...settingsValue } = value
+          await cacheServerCollection('settings', [{ id: 'workspace', settings: settingsValue, revision: settingsRevision.current }])
+          const mergedSettings = await readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings')
+          if (mergedSettings[0]?.revision !== undefined) settingsRevision.current = mergedSettings[0].revision
+          if (!cancelled) setSettings((current) => ({ ...current, ...(mergedSettings[0]?.settings ?? settingsValue) }))
+        } catch (error) { console.warn('Settings refresh failed; retaining local settings', error); errors.push('settings') }
+      })(),
+    ])
+    if (!cancelled) {
+      setDashboardErrors(errors.length ? [`Some server data could not refresh (${errors.join(', ')}); cached records remain available.`] : [])
+      if (errors.includes('products') && products.length === 0) setProductsError('Inventory is not cached and the server could not be reached.')
     }
   }
 
-  void loadProducts()
-  void loadOtherDashboardData()
-  return () => { cancelled = true }
-}, [])
+  const onOnline = () => { void loadOtherDashboardData() }
+  const onOffline = () => setConnectionState('offline')
+  const onLocalChange = () => {
+    void Promise.all([readLocalCollection<Product>('products'), readLocalCollection<Debt>('debts'), readLocalCollection<Receipt>('receipts'), readLocalCollection<Activity>('activities'), readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings'), readLocalCollection<PendingOrder>('pendingOrders')]).then(([localProducts, localDebts, localReceipts, localActivities, localSettings, localPendingOrders]) => {
+      if (cancelled) return
+      setProducts(localProducts); setDebts(localDebts); setReceipts(localReceipts); setActivities(localActivities)
+      setPendingOrders(localPendingOrders)
+      if (localSettings[0]?.settings) { settingsRevision.current = localSettings[0].revision ?? settingsRevision.current; setSettings((current) => ({ ...current, ...localSettings[0].settings })) }
+    }).catch((error) => console.error('Could not refresh local dashboard records:', error))
+  }
+  window.addEventListener('online', onOnline); window.addEventListener('offline', onOffline)
+  window.addEventListener('micro-mec-queue-changed', onLocalChange)
+  void hydrateLocalData().then(() => { if (!cancelled) return loadOtherDashboardData() })
+  return () => { cancelled = true; window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); window.removeEventListener('micro-mec-queue-changed', onLocalChange) }
+}, [authChecking, signedIn])
 
 useEffect(() => {
-  if (section !== 'Overview') return
+  if (authChecking || !signedIn || section !== 'Overview') return
   let cancelled = false
-  setOverviewSalesMinor(null)
   const from = new Date()
   from.setHours(0, 0, 0, 0)
   const to = new Date(from)
   to.setDate(to.getDate() + 1)
+  void readLocalCollection<Sale>('sales').then((sales) => {
+    const localTotal = sales.filter((sale) => { const date = new Date(sale.createdAt); return date >= from && date < to }).reduce((sum, sale) => sum + sale.totalMinor, 0)
+    if (!cancelled) setOverviewSalesMinor(localTotal)
+  }).catch((error) => console.warn('Could not read cached sales for Overview:', error))
   const params = new URLSearchParams({ paged: '1', limit: '1', from: from.toISOString(), to: to.toISOString() })
+  if (!navigator.onLine) return () => { cancelled = true }
   fetch(`/api/sales?${params.toString()}`, { cache: 'no-store' })
     .then(async (response) => {
       const result: unknown = await response.json().catch(() => null)
@@ -205,11 +278,15 @@ useEffect(() => {
       if (!cancelled) setOverviewSalesMinor(null)
     })
   return () => { cancelled = true }
-}, [section])
+}, [authChecking, signedIn, section])
 
 useEffect(() => {
+  if (authChecking || !signedIn) return
   async function loadSettings() {
     try {
+      const cached = await readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings')
+      if (cached[0]?.settings) { settingsRevision.current = cached[0].revision ?? 0; setSettings((current) => ({ ...current, ...cached[0].settings })) }
+      if (!navigator.onLine) return
       const response = await fetch('/api/settings')
 
       if (!response.ok) {
@@ -217,18 +294,19 @@ useEffect(() => {
       }
 
       const settingsData = await response.json()
-
-      setSettings((current) => ({
-        ...current,
-        ...settingsData,
-      }))
+      settingsRevision.current = typeof settingsData.revision === 'number' ? settingsData.revision : 0
+      const { revision, ...settingsValue } = settingsData
+      await cacheServerCollection('settings', [{ id: 'workspace', settings: settingsValue, revision: settingsRevision.current }])
+      const merged = await readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings')
+      if (merged[0]?.revision !== undefined) settingsRevision.current = merged[0].revision
+      setSettings((current) => ({ ...current, ...(merged[0]?.settings ?? settingsValue) }))
     } catch (error) {
       console.error('Failed to load settings:', error)
     }
   }
 
   loadSettings()
-}, [])
+}, [authChecking, signedIn])
 
 const notify = async (
   text: string,
@@ -249,46 +327,38 @@ const notify = async (
 
   setToast(text)
 
-  const activity = {
-    text,
-    detail,
-    time: now(),
-    ...extra,
+  const operationId = crypto.randomUUID()
+  const activity: Activity = {
+    id: Number.parseInt(operationId.replaceAll('-', '').slice(0, 12), 16),
+    text, detail, time: now(), read: false, ...extra,
   }
-
   try {
-    const response = await fetch('/api/activities', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(activity),
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to save notification')
+    const queueActivity = async () => {
+      await saveLocalRecordAndOperation('activities', activity.id, activity, {
+        id: operationId, type: 'activity.create', label: text, target: '/api/activities', method: 'POST',
+        payload: { operationId, ...activity }, recordCollection: 'activities', recordId: activity.id,
+      })
+      setActivities((items) => [activity, ...items.filter((item) => item.id !== activity.id)])
+      window.dispatchEvent(new Event('micro-mec-queue-changed'))
     }
-
-    const savedActivity = await response.json()
-
-   setActivities((items) => [
-  savedActivity,
-  ...items,
-])
+    let response: Response | null = null
+    if (shouldAttemptServerRequest()) {
+      try { response = await fetch('/api/activities', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operationId, ...activity }) }) }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        await queueActivity()
+        return
+      }
+    }
+    if (!response) { await queueActivity(); return }
+    const result = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(typeof result?.message === 'string' ? result.message : `Activity save failed (${response.status})`)
+    const saved = result && typeof result === 'object' ? result as Activity : activity
+    await writeLocalRecord('activities', saved.id, saved, false)
+    setActivities((items) => [saved, ...items.filter((item) => item.id !== saved.id)])
   } catch (error) {
-    console.error('Failed to save notification:', error)
-
-   setActivities((items) => [
-  {
-    id: Date.now(),
-    text,
-    detail,
-    time: now(),
-    read: false,
-    ...extra,
-  },
-  ...items,
-])
+    console.error('Could not save activity locally:', error)
+    setToast(error instanceof Error ? `Activity was not saved: ${error.message}` : 'Activity was not saved')
   }
 
   window.setTimeout(() => setToast(''), 2600)
@@ -308,7 +378,13 @@ const notify = async (
   )
 
   const visibleDebts = useMemo(
-    () => debts.filter((d) => (section === 'Paid' ? !!d.paidAt : !d.paidAt)).filter((d) => `${d.customer} ${d.invoice} ${d.receiptNumber ?? ''}`.toLowerCase().includes(query.toLowerCase())),
+    () => debts
+      .filter((d) => (section === 'Paid' ? !!d.paidAt : !d.paidAt))
+      .filter((d) => `${d.customer} ${d.invoice} ${d.receiptNumber ?? ''}`.toLowerCase().includes(query.toLowerCase()))
+      .sort((a, b) => {
+        const byCreatedAt = (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0)
+        return byCreatedAt || String(b.id).localeCompare(String(a.id), undefined, { numeric: true })
+      }),
     [debts, query, section],
   )
 
@@ -352,25 +428,27 @@ const notify = async (
   setSection('Inbox')
 
   try {
-    const response = await fetch(`/api/activities/${activity.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ read: true }),
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to mark notification as read')
-    }
+    await persistRead(activity)
   } catch (error) {
     console.error('Failed to mark notification as read:', error)
   }
 }
-  const signOut = () => {
-    setSignedIn(false)
-    setMenuOpen(false)
-    setToast('Signed out successfully')
+  const signOut = async () => {
+    try {
+      const response = await fetch('/api/auth/logout', { method: 'POST' })
+      const result: unknown = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string'
+          ? result.message
+          : 'Sign out failed')
+      }
+      setSignedIn(false)
+      setMenuOpen(false)
+      setToast('Signed out successfully')
+    } catch (error) {
+      console.error('Could not sign out:', error)
+      setToast(error instanceof Error ? error.message : 'Sign out failed')
+    }
   }
 
   // Keep the sidebar visible on large screens and only allow mobile open/close toggling.
@@ -383,27 +461,54 @@ const notify = async (
     return () => window.removeEventListener('resize', update)
   }, [])
 
-  if (!signedIn) return <LoginScreen onSignIn={() => { setSignedIn(true); setToast('Welcome back') }} />
+  if (authChecking) return null
+  if (!signedIn) return <LoginScreen onSignIn={async (identifier, password) => {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier, password }),
+    })
+    const result: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new Error(typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string'
+        ? result.message
+        : 'Sign-in failed')
+    }
+    setSignedIn(true)
+    setToast('Welcome back')
+  }} />
 
 
-   const updateProductOnServer = async (
-  id: number,
-  updates: Partial<Product>
-) => {
-  const response = await fetch(`/api/products/${id}`, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(updates),
-  })
-
+   const updateProduct = async (current: Product, updates: Partial<Product>) => {
+  if (typeof updates.stock === 'number' && updates.stock < Number(current.reservedStock ?? 0)) throw new Error('Stock cannot be reduced below quantities reserved for pending orders.')
+  const operationId = crypto.randomUUID()
+  const payload = { ...updates, operationId, expectedRevision: current.revision ?? 0 }
+  const earlier = (await listQueuedOperations()).filter((operation) => operation.type.startsWith('product.') && operation.recordId === current.id && operation.status !== 'synchronized').at(-1)
+  const saveLocally = async () => {
+    const updated: Product = { ...current, ...updates, revision: (current.revision ?? 0) + 1 }
+    await saveLocalRecordAndOperation('products', current.id, updated, {
+      id: operationId, type: 'product.update', label: `Update product ${current.name}`, target: `/api/products/${current.id}`, method: 'PATCH', payload,
+      ...(earlier ? { dependsOn: earlier.id } : {}), recordCollection: 'products', recordId: current.id,
+    })
+    setProducts((items) => items.map((product) => product.id === current.id ? updated : product))
+    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    return { product: updated, queued: true }
+  }
+  if (earlier || !shouldAttemptServerRequest()) return saveLocally()
+  let response: Response
+  try {
+    response = await fetch(`/api/products/${current.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    return saveLocally()
+  }
   if (!response.ok) {
+    if (await shouldQueueAfterServerFailure(response)) return saveLocally()
     const result = await response.json().catch(() => null)
     throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to update product')
   }
-
-  return response.json()
+  const updated = await response.json() as Product
+  return { product: updated, queued: false }
 }
 
 const refreshPosProducts = async (): Promise<Product[]> => {
@@ -411,18 +516,22 @@ const refreshPosProducts = async (): Promise<Product[]> => {
   if (!response.ok) throw new Error('Could not refresh inventory after checkout validation')
   const result: unknown = await response.json()
   if (!isProductList(result)) throw new Error('Inventory returned invalid product data')
+  await cacheServerCollection('products', result as Array<Product & Record<string, unknown>>)
   setProducts(result)
   setProductsError('')
   return result
 }
 
-const deleteProductOnServer = async (id: number) => {
+const deleteProductOnServer = async (id: number, operationId: string) => {
   const response = await fetch(`/api/products/${id}`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operationId }),
   })
 
   if (!response.ok) {
-    throw new Error('Failed to delete product')
+    const result = await response.json().catch(() => null)
+    throw new Error(typeof result?.message === 'string' ? result.message : `Failed to delete product (${response.status})`)
   }
 
   return response.json()
@@ -449,43 +558,80 @@ const formatCurrency = (amount: number) => {
   const model = String(f.get('model') || '').trim()
   const barcode = String(f.get('barcode') || '').trim()
 
-  const newProduct = {
-    name: String(f.get('name')),
+  const name = String(f.get('name') || '').trim()
+  const sku = model || `NEW-${String(Date.now()).slice(-4)}`
+  const category = String(f.get('category') || '').trim()
+  const price = Number(f.get('price'))
+  if (!name || !category || !Number.isFinite(stock) || stock < 0 || !Number.isFinite(price) || price < 0 || barcode.length > 128 || /[\u0000-\u001f\u007f]/.test(barcode)) {
+    setToast('Enter a product name, category, valid stock and price, and a valid barcode')
+    return
+  }
+  if (barcode && products.some((product) => (product.barcode ?? '').trim().toLowerCase() === barcode.toLowerCase())) {
+    setToast('That barcode is already assigned to another product')
+    return
+  }
+  const operationId = crypto.randomUUID()
+  const id = Date.now() * 1000 + Math.floor(Math.random() * 1000)
+  const newProduct: Product = {
+    id,
+    name,
     model: model || `MEC-${String(Date.now()).slice(-5).toUpperCase()}`,
-    sku: model || `NEW-${String(Date.now()).slice(-4)}`,
+    sku,
     barcode,
-    category: String(f.get('category')),
+    category,
     stock,
-    price: Number(f.get('price')),
+    price,
     status: stock === 0
       ? 'Out of stock'
       : stock <= Math.max(0, Number(settings.lowStockThreshold) || 0)
         ? 'Low stock'
         : 'In stock',
+    revision: 1,
+  }
+
+  const payload = { ...newProduct, operationId }
+  const saveLocally = async () => {
+    await saveLocalRecordAndOperation('products', id, newProduct, {
+      id: operationId, type: 'product.create', label: `Add product ${name}`, target: '/api/products', method: 'POST', payload,
+      recordCollection: 'products', recordId: id,
+    })
+    setProducts((current) => [newProduct, ...current.filter((item) => item.id !== id)])
+    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    return newProduct
   }
 
   try {
-    const response = await fetch('/api/products', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(newProduct),
-    })
-
-    if (!response.ok) {
-      const result = await response.json().catch(() => null)
-      throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to add product')
+    let savedProduct: Product = newProduct
+    let queued = false
+    let response: Response | null = null
+    if (shouldAttemptServerRequest()) {
+      try { response = await fetch('/api/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        savedProduct = await saveLocally(); queued = true
+      }
+    } else {
+      savedProduct = await saveLocally(); queued = true
     }
-
-    const savedProduct = await response.json()
-
-   setProducts((products) => [savedProduct, ...products])
+    if (!queued && response && !response.ok) {
+      if (await shouldQueueAfterServerFailure(response)) {
+        savedProduct = await saveLocally()
+        queued = true
+      } else {
+        const result = await response.json().catch(() => null)
+        throw new Error(typeof result?.message === 'string' ? result.message : `Failed to add product (${response.status})`)
+      }
+    }
+    if (!queued && response) {
+      savedProduct = await response.json() as Product
+      await writeLocalRecord('products', id, savedProduct, false)
+      setProducts((current) => [savedProduct, ...current.filter((item) => item.id !== id)])
+    }
     setModal(null)
 
     notify(
   `Product added to stock: ${savedProduct.name}`,
-  `New product added. Model: ${savedProduct.model}. SKU: ${savedProduct.sku}. Category: ${savedProduct.category}. Stock: ${savedProduct.stock} units. Price: ${money(savedProduct.price, settings.currency)}.`,
+      `New product added. Model: ${savedProduct.model}. SKU: ${savedProduct.sku}. Category: ${savedProduct.category}. Stock: ${savedProduct.stock} units. Price: ${money(savedProduct.price, settings.currency)}.${queued ? ' Saved locally and awaiting manual synchronization.' : ''}`,
   true,
   {
     type: 'product',
@@ -494,6 +640,7 @@ const formatCurrency = (amount: number) => {
     currency: settings.currency,
   }
     )
+    if (queued) setToast('Product saved on this device · waiting for Sync Now')
   } 
   
   catch (error) {
@@ -512,7 +659,7 @@ const formatCurrency = (amount: number) => {
     const item = String(form.get('item') || '').trim()
     const receiptNumber = String(form.get('receiptNumber') || '').trim()
     const amount = Number(form.get('amount'))
-    const idempotencyKey = String(form.get('idempotencyKey') || '')
+    const idempotencyKey = String(form.get('idempotencyKey') || '') || crypto.randomUUID()
 
     if (!customer || !item || !Number.isFinite(amount) || amount <= 0) {
       setToast('Enter a customer, items bought, and a valid amount')
@@ -520,30 +667,55 @@ const formatCurrency = (amount: number) => {
     }
 
     try {
-      const response = await fetch('/api/debts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idempotencyKey, customer, item, receiptNumber, amount, due: '30 days', createdAt: new Date().toISOString() }),
-      })
-
-      const result: unknown = await response.json().catch(() => null)
-      if (!response.ok) {
-        const message = typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Debt could not be saved'
-        throw new Error(message)
+      const createdAt = new Date().toISOString()
+      const invoice = `DEBT-${Date.now().toString(36).toUpperCase()}-${idempotencyKey.slice(0, 6).toUpperCase()}`
+      const payload = { idempotencyKey, customer, item, receiptNumber, amount, invoice, due: '30 days', createdAt }
+      const localDebt: Debt = { id: `offline-${idempotencyKey}`, customer, invoice, ...(receiptNumber ? { receiptNumber } : {}), items: [{ name: item, price: amount }], amount: Number(amount.toFixed(2)), payments: [], due: '30 days', createdAt }
+      const queueDebt = async () => {
+        await saveLocalRecordAndOperation('debts', localDebt.id, localDebt, {
+          id: idempotencyKey, type: 'debt.create', label: `Create debt ${invoice}`, target: '/api/debts', method: 'POST', payload,
+          recordCollection: 'debts', recordId: localDebt.id,
+        })
       }
-      if (typeof result !== 'object' || result === null || !('id' in result) || !('amount' in result)) throw new Error('The saved debt response is invalid')
-
-      const savedDebt = result as Debt
+      let savedDebt = localDebt
+      let queued = false
+    let response: Response | null = null
+    if (shouldAttemptServerRequest()) {
+      try { response = await fetch('/api/debts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error
+        await queueDebt(); queued = true
+      }
+    } else {
+      await queueDebt(); queued = true
+    }
+    if (!queued && response) {
+      if (!response.ok) {
+        if (await shouldQueueAfterServerFailure(response)) {
+          await queueDebt()
+          queued = true
+        } else {
+          const result = await response.json().catch(() => null)
+          throw new Error(typeof result?.message === 'string' ? result.message : `Debt save failed (${response.status})`)
+        }
+      } else {
+        const result = await response.json().catch(() => null)
+        savedDebt = result as Debt
+        await writeLocalRecord('debts', savedDebt.id, savedDebt, false)
+      }
+      }
       setDebts((current) => [savedDebt, ...current.filter((debt) => debt.id !== savedDebt.id)])
       setModal(null)
+      if (queued) window.dispatchEvent(new Event('micro-mec-queue-changed'))
       notify(
-        `Debt added for ${savedDebt.customer}`,
-        `Invoice: ${savedDebt.invoice}. ${savedDebt.receiptNumber ? `Receipt RN: ${savedDebt.receiptNumber}. ` : ''}Total: ${money(savedDebt.amount, settings.currency)}. Items: ${savedDebt.items.map((item) => item.name).join(', ')}.`,
+        queued ? `Debt saved locally for ${savedDebt.customer}` : `Debt saved for ${savedDebt.customer}`,
+        `Invoice: ${savedDebt.invoice}. ${savedDebt.receiptNumber ? `Receipt RN: ${savedDebt.receiptNumber}. ` : ''}Total: ${money(savedDebt.amount, settings.currency)}.${queued ? ' Pending manual synchronization.' : ''}`,
         true,
         { type: 'debt', amount: savedDebt.amount, currency: settings.currency, customer: savedDebt.customer, invoice: savedDebt.invoice, remaining: savedDebt.amount },
       )
+      setToast(queued ? 'Debt saved on this device · waiting for Sync Now' : 'Debt saved to MongoDB')
     } catch (error) {
-      console.error('Failed to add debt:', error)
+      console.error('Failed to save debt:', error)
       setToast(error instanceof Error ? error.message : 'Debt could not be saved')
     }
   }
@@ -560,6 +732,24 @@ const formatCurrency = (amount: number) => {
     invoice: String(f.get('invoice') || '').trim(),
     date: now(),
   }
+  if (!newReceipt.name || !newReceipt.model || !newReceipt.invoice || !Number.isFinite(newReceipt.quantity) || newReceipt.quantity < 0) {
+    setToast('Enter a product name, model, invoice, and valid non-negative quantity')
+    return
+  }
+  const operationId = crypto.randomUUID()
+  const id = Date.now() * 1000 + Math.floor(Math.random() * 1000)
+  const localReceipt: Receipt = { ...newReceipt, id, revision: 1 }
+  const payload = { ...localReceipt, operationId }
+  const saveLocally = async () => {
+    const prior = (await listQueuedOperations()).filter((operation) => operation.type === 'receipt.create' && operation.status !== 'synchronized').at(-1)
+    await saveLocalRecordAndOperation('receipts', id, localReceipt, {
+      id: operationId, type: 'receipt.create', label: `Record stock receipt ${newReceipt.invoice}`, target: '/api/receipts', method: 'POST', payload,
+      ...(prior ? { dependsOn: prior.id } : {}), recordCollection: 'receipts', recordId: id,
+    })
+    setReceipts((current) => [localReceipt, ...current.filter((item) => item.id !== id)])
+    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    return localReceipt
+  }
 
   const deleteReceiptOnServer = async (id: number) => {
   const response = await fetch(`/api/receipts/${id}`, {
@@ -574,27 +764,38 @@ const formatCurrency = (amount: number) => {
 }
 
   try {
-    const response = await fetch('/api/receipts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(newReceipt),
-    })
-
-    if (!response.ok) {
-      throw new Error('Failed to record stock receipt')
+    let savedReceipt: Receipt = localReceipt
+    let queued = false
+  let response: Response | null = null
+  if (shouldAttemptServerRequest()) {
+    try { response = await fetch('/api/receipts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+    catch (error) {
+      if (!(error instanceof TypeError)) throw error
+      savedReceipt = await saveLocally(); queued = true
     }
-
-    const savedReceipt = await response.json()
-
-    setReceipts((receipts) => [savedReceipt, ...receipts])
+  } else {
+    savedReceipt = await saveLocally(); queued = true
+  }
+  if (!queued && response && !response.ok) {
+    if (await shouldQueueAfterServerFailure(response)) {
+      savedReceipt = await saveLocally()
+      queued = true
+    } else {
+      const result = await response.json().catch(() => null)
+      throw new Error(typeof result?.message === 'string' ? result.message : `Failed to record stock receipt (${response.status})`)
+    }
+  }
+  if (!queued && response) {
+    savedReceipt = await response.json() as Receipt
+    await writeLocalRecord('receipts', id, savedReceipt, false)
+    setReceipts((current) => [savedReceipt, ...current.filter((item) => item.id !== id)])
+    }
 
     setModal(null)
 
     notify(
   `New stock recorded: ${savedReceipt.name} (${savedReceipt.quantity} units)`,
-  `Incoming stock recorded. Model: ${savedReceipt.model}. Invoice: ${savedReceipt.invoice}. Quantity: ${savedReceipt.quantity} units. Received: ${savedReceipt.date}.`,
+  `Incoming stock recorded. Model: ${savedReceipt.model}. Invoice: ${savedReceipt.invoice}. Quantity: ${savedReceipt.quantity} units. Received: ${savedReceipt.date}.${queued ? ' Saved locally and awaiting manual synchronization.' : ''}`,
   true,
   {
     type: 'stock',
@@ -602,17 +803,18 @@ const formatCurrency = (amount: number) => {
     quantity: savedReceipt.quantity,
   }
 )
+    if (queued) setToast('Stock receipt saved on this device · waiting for Sync Now')
   } catch (error) {
     console.error('Failed to record stock receipt:', error)
-    setToast('Failed to record stock receipt')
+    setToast(error instanceof Error ? error.message : 'Failed to record stock receipt')
   }
 }
 
-  const sectionHeading = section === 'New Stocks' ? 'Parking Shop' : section === 'Store' ? 'New Stocks' : section
+  const sectionHeading = section
 
   return (
     <div className={dark ? 'app-shell dark' : 'app-shell'}>
-      <Sidebar section={section} sidebar={sidebar} settings={settings} onGo={go} onClose={() => setSidebar(false)} onSignOut={signOut} />
+      <Sidebar section={section} sidebar={sidebar} settings={settings} pendingCount={pendingCount} onGo={go} onClose={() => setSidebar(false)} onSignOut={signOut} />
 
       <main className="main-content">
         <Topbar
@@ -621,6 +823,7 @@ const formatCurrency = (amount: number) => {
           notifications={notifications}
           menuOpen={menuOpen}
           activities={activities}
+          pendingCount={pendingCount}
           onToggleTheme={() => setDark(!dark)}
           onToggleNotifications={() => {
             setNotifications((open) => !open)
@@ -637,15 +840,17 @@ const formatCurrency = (amount: number) => {
         />
 
         <div className="page-wrap">
+          {connectionState === 'offline' && <div className="offline-banner" role="status">Offline mode · showing this device’s saved business data. Changes remain local until you confirm Sync Now.</div>}
+          {dashboardErrors.map((message) => <div className="dashboard-data-warning" role="status" key={message}>{message}</div>)}
           {section !== 'POS' && <div className="page-heading">
             <div>
-              <div className="eyebrow">{section === 'Overview' ? 'Good morning, Alex' : 'Workspace'}</div>
+              <div className="eyebrow">{section === 'Overview' ? 'Micro-MEC workspace' : 'Workspace'}</div>
               <h1>{sectionHeading}</h1>
               <p>
-                {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : section === 'Store' ? 'Receive, check, and record deliveries at your main store.' : section === 'Transfers' ? 'Record goods dispatched from the main store to a branch.' : 'Keep an eye on your products and stock levels.'}
+                {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Pending' ? 'Review supplied orders and confirm payment or release reservations.' : section === 'Returns' ? 'Review customer returns, inspection decisions, and refunds.' : section === 'Sync Center' ? 'Review local operations and synchronize only after confirmation.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : section === 'Store' ? 'Receive, check, and record deliveries at your main store.' : section === 'Transfers' ? 'Record goods dispatched from the main store to a branch.' : 'Keep an eye on your products and stock levels.'}
               </p>
             </div>
-            {!['Overview', 'Paid', 'Settings', 'Team members', 'Inbox', 'Store', 'Transfers'].includes(section) && (
+            {!['Overview', 'Paid', 'Settings', 'Team members', 'Inbox', 'Store', 'Transfers', 'Pending', 'Returns', 'Sync Center'].includes(section) && (
               <button className="primary-button" onClick={() => setModal(section === 'Debt' ? 'debt' : section === 'New Stocks' ? 'receipt' : 'product')}>
                 <Plus />
                 {section === 'Debt' ? 'Add debt' : section === 'New Stocks' ? 'Record stock' : 'Add product'}
@@ -655,7 +860,20 @@ const formatCurrency = (amount: number) => {
 
           {section === 'Overview' && <OverviewSection outstanding={outstanding} salesMinor={overviewSalesMinor} currency={settings.currency} onGo={go} />}
 
-          <PosCart active={section === 'POS'} products={products} productsLoading={productsLoading} productsError={productsError} currency={settings.currency} workspace={settings.workspace} onRefreshProducts={refreshPosProducts} onOpen={() => go('POS')} />
+          {section === 'Pending' && <PendingOrdersSection
+            orders={pendingOrders}
+            setOrders={setPendingOrders}
+            setProducts={setProducts}
+            currency={settings.currency}
+            workspace={settings.workspace}
+            onPrint={async (sale) => { if (pendingPrinter.current) await pendingPrinter.current(sale); else setToast('Receipt printer is not ready yet') }}
+            onActivity={(text, detail) => { void notify(text, detail, true, { type: 'system' }) }}
+          />}
+
+          {section === 'Returns' && <ReturnsSection currency={settings.currency} />}
+          {section === 'Sync Center' && <SyncCenter currency={settings.currency} />}
+
+          <PosCart active={section === 'POS'} products={products} productsLoading={productsLoading} productsError={productsError} currency={settings.currency} workspace={settings.workspace} lowStockThreshold={Math.max(0, Number(settings.lowStockThreshold) || 0)} onLocalSale={(stockUpdates) => setProducts(stockUpdates)} onRefreshProducts={refreshPosProducts} onOpen={() => go('POS')} onOrderCreated={(order) => { setPendingOrders((current) => [order, ...current.filter((item) => item.id !== order.id)]); void notify('New pending order', `${order.reference} · ${order.customerName || 'Walk-in customer'} · ${money(order.totalMinor / 100, settings.currency)}`, true, { type: 'system' }) }} onRegisterPrint={(print) => { pendingPrinter.current = print }} />
 
           {section === 'Stocks' && (
             <>
@@ -712,16 +930,18 @@ const formatCurrency = (amount: number) => {
                             : 'In stock'
 
                     try {
-                      const updatedProduct = await updateProductOnServer(id, {
+                      const updateResult = await updateProduct(currentProduct, {
                         ...updates,
                         stock,
                         price,
                         status,
                       })
+                      const updatedProduct = updateResult.product
 
                       setProducts((items) =>
                         items.map((p) => p.id === id ? updatedProduct : p)
                       )
+                      if (!updateResult.queued) await writeLocalRecord('products', id, updatedProduct, false)
 
                       if (stock !== currentProduct.stock) {
                         notify(
@@ -749,7 +969,7 @@ const formatCurrency = (amount: number) => {
                         )
                       }
 
-                      setToast('Stock changes saved')
+                      setToast(updateResult.queued ? 'Stock changes saved on this device · waiting for Sync Now' : 'Stock changes saved')
                     } catch (error) {
                       console.error('Failed to save stock changes:', error)
                       setToast(error instanceof Error ? error.message : 'Failed to save stock changes')
@@ -774,22 +994,48 @@ const formatCurrency = (amount: number) => {
 
    <Receipts
   receipts={receipts}
+  query={query}
+  statusFilter={statusFilter}
   onEdit={async (id, updates) => {
     try {
-      const response = await fetch(`/api/receipts/${id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updates),
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to update stock')
+      const current = receipts.find((item) => item.id === id)
+      if (!current) throw new Error('Stock receipt was not found')
+      const operationId = crypto.randomUUID()
+      const payload = { ...updates, operationId, expectedRevision: current.revision ?? 0 }
+      const prior = (await listQueuedOperations()).filter((operation) => operation.type.startsWith('receipt.') && operation.recordId === id && operation.status !== 'synchronized').at(-1)
+      const updatedLocal: Receipt = { ...current, ...updates, revision: (current.revision ?? 0) + 1 }
+      const saveLocally = async () => {
+        await saveLocalRecordAndOperation('receipts', id, updatedLocal, {
+          id: operationId, type: 'receipt.update', label: `Update stock receipt ${current.invoice}`, target: `/api/receipts/${id}`, method: 'PATCH', payload,
+          ...(prior ? { dependsOn: prior.id } : {}), recordCollection: 'receipts', recordId: id,
+        })
+        window.dispatchEvent(new Event('micro-mec-queue-changed'))
+        return updatedLocal
       }
-
-      const updatedReceipt = await response.json()
-
+      let updatedReceipt: Receipt
+      let queued = false
+      if (prior || !shouldAttemptServerRequest()) { updatedReceipt = await saveLocally(); queued = true }
+      else {
+        let response: Response | null = null
+        try { response = await fetch(`/api/receipts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+        catch (error) {
+          if (!(error instanceof TypeError)) throw error
+          updatedReceipt = await saveLocally(); queued = true
+        }
+        if (!queued && response && !response.ok) {
+          if (await shouldQueueAfterServerFailure(response)) {
+            updatedReceipt = await saveLocally()
+            queued = true
+          } else {
+            const result = await response.json().catch(() => null)
+            throw new Error(typeof result?.message === 'string' ? result.message : `Failed to update stock (${response.status})`)
+          }
+        }
+        if (!queued && response) {
+          updatedReceipt = await response.json() as Receipt
+          await writeLocalRecord('receipts', id, updatedReceipt, false)
+        }
+      }
       setReceipts((items) =>
         items.map((item) =>
           item.id === updatedReceipt.id
@@ -797,6 +1043,7 @@ const formatCurrency = (amount: number) => {
             : item
         )
       )
+      setToast(queued ? 'Stock receipt updated locally · waiting for Sync Now' : 'Stock receipt updated')
     } catch (error) {
       console.error('Failed to update stock:', error)
       setToast('Failed to update stock')
@@ -820,8 +1067,8 @@ const formatCurrency = (amount: number) => {
             productsError={productsError}
             persistenceError={prototypeData.persistenceError}
             records={prototypeData.receivingRecords}
-            onCreate={async (record) => { const saved = await prototypeData.addReceivingRecord(record); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
-            onUpdate={async (id, record, revision) => { const saved = await prototypeData.updateReceivingRecord(id, record, revision); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onCreate={async (record) => { const saved = await prototypeData.addReceivingRecord(record); if (shouldAttemptServerRequest()) try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onUpdate={async (id, record, revision) => { const saved = await prototypeData.updateReceivingRecord(id, record, revision); if (shouldAttemptServerRequest()) try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
           />}
 
           {section === 'Transfers' && <TransfersSection
@@ -831,8 +1078,8 @@ const formatCurrency = (amount: number) => {
             persistenceError={prototypeData.persistenceError}
             branches={prototypeData.branches}
             transfers={prototypeData.transfers}
-            onCreate={async (transfer) => { const saved = await prototypeData.addTransfer(transfer); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
-            onUpdate={async (id, transfer, revision) => { const saved = await prototypeData.updateTransfer(id, transfer, revision); try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onCreate={async (transfer) => { const saved = await prototypeData.addTransfer(transfer); if (shouldAttemptServerRequest()) try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
+            onUpdate={async (id, transfer, revision) => { const saved = await prototypeData.updateTransfer(id, transfer, revision); if (shouldAttemptServerRequest()) try { await refreshProducts() } catch (error) { setToast(error instanceof Error ? error.message : 'Inventory refresh failed') } return saved }}
             onAddBranch={prototypeData.addBranch}
             onRenameBranch={prototypeData.renameBranch}
           />}
@@ -847,7 +1094,7 @@ const formatCurrency = (amount: number) => {
                     ? money(
                     debts
                      .filter((d) => d.paidAt)
-                     .reduce((a, d) => a + d.amount, 0),
+                     .reduce((a, d) => a + d.amount, 0) + pendingOrders.filter((order) => order.status === 'Accepted').reduce((sum, order) => sum + order.totalMinor / 100, 0),
                   settings.currency
                      )
                   : money(outstanding, settings.currency)}
@@ -859,6 +1106,7 @@ const formatCurrency = (amount: number) => {
                 <Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All']} />
                 <DebtTable debts={visibleDebts} paid={section === 'Paid'} onOpen={(d) => { setSelectedDebt(d); setModal('detail')  }} currency={settings.currency} />
               </section>
+              {section === 'Paid' && <section className="panel paid-orders-panel"><div className="panel-heading"><div><h2>Accepted supply orders</h2><p>Completed sales created from Pending Orders.</p></div></div>{pendingOrders.filter((order) => order.status === 'Accepted').length ? <div className="table-wrap"><table><thead><tr><th>Receipt</th><th>Customer</th><th>Items</th><th>Total paid</th><th>Date</th><th /></tr></thead><tbody>{pendingOrders.filter((order) => order.status === 'Accepted').map((order) => <tr key={order.id}><td><b>{order.sale?.receiptNumber ?? order.reference}</b></td><td>{order.customerName || 'Walk-in customer'}<small>{order.customerPhone}</small></td><td>{order.items.length}</td><td>{money(order.totalMinor / 100, settings.currency)}</td><td>{new Date(order.sale?.createdAt ?? order.createdAt).toLocaleString()}</td><td>{order.sale && <button className="secondary-button" onClick={() => { if (pendingPrinter.current) void pendingPrinter.current(order.sale!); else setToast('Receipt printer is not ready yet') }}><Printer /> Print receipt</button>}</td></tr>)}</tbody></table></div> : <div className="empty"><CircleDollarSign /><b>No accepted supply orders</b><span>Accepted orders will appear here as paid sales.</span></div>}</section>}
             </>
           )}
 
@@ -876,30 +1124,38 @@ const formatCurrency = (amount: number) => {
     settings={settings}
     setSettings={setSettings}
     onSave={async () => {
-      try {
-        const response = await fetch('/api/settings', {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(settings),
+      const operationId = crypto.randomUUID()
+      const expectedRevision = settingsRevision.current
+      const payload = { ...settings, operationId, expectedRevision }
+      const queuedSettings = (await listQueuedOperations()).filter((operation) => operation.type === 'settings.update' && operation.status !== 'synchronized')
+      const queueSettings = async () => {
+        const localValue = { id: 'workspace', settings, revision: expectedRevision + 1 }
+        await saveLocalRecordAndOperation('settings', 'workspace', localValue, {
+          id: operationId, type: 'settings.update', label: 'Update workspace settings', target: '/api/settings', method: 'PATCH',
+          payload, ...(queuedSettings.length ? { dependsOn: queuedSettings.map((operation) => operation.id) } : {}), recordCollection: 'settings', recordId: 'workspace',
         })
-
+        settingsRevision.current = expectedRevision + 1
+        window.dispatchEvent(new Event('micro-mec-queue-changed'))
+        setToast('Settings saved on this device · waiting for Sync Now')
+      }
+      try {
+        if (queuedSettings.length || !shouldAttemptServerRequest()) return await queueSettings()
+      let response: Response
+      try { response = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+        catch (error) { if (!(error instanceof TypeError)) throw error; return await queueSettings() }
         if (!response.ok) {
-          throw new Error('Failed to save settings')
+          const result = await response.json().catch(() => null)
+          throw new Error(typeof result?.message === 'string' ? result.message : `Settings update failed (${response.status})`)
         }
-
         const savedSettings = await response.json()
-
-        setSettings((current) => ({
-          ...current,
-          ...savedSettings,
-        }))
-
+        settingsRevision.current = typeof savedSettings.revision === 'number' ? savedSettings.revision : expectedRevision + 1
+        const { revision, ...settingsValue } = savedSettings
+        setSettings((current) => ({ ...current, ...settingsValue }))
+        await cacheServerCollection('settings', [{ id: 'workspace', settings: settingsValue, revision: settingsRevision.current }])
         notify('Workspace settings saved')
       } catch (error) {
         console.error('Failed to save settings:', error)
-        setToast('Failed to save settings')
+        setToast(error instanceof Error ? error.message : 'Failed to save settings')
       }
     }}
   />
@@ -930,37 +1186,60 @@ const formatCurrency = (amount: number) => {
             readOnly={section === 'Paid'}
             onClose={() => { setModal(null); setSelectedDebt(null) }}
             onSave={async (draft, fullyPaid) => {
+              const operationId = crypto.randomUUID()
               const updatedDebt = {
                 ...draft,
                 paidAt: fullyPaid ? now() : draft.paidAt,
               }
-
-              const response = await fetch(`/api/debts/${draft.id}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updatedDebt),
+              const savedDebt: Debt = { ...updatedDebt, revision: (selectedDebt?.revision ?? 0) + 1 }
+              const payload = { ...updatedDebt, operationId, expectedRevision: selectedDebt?.revision ?? 0 }
+              const priorOperations = (await listQueuedOperations()).filter((operation) => operation.recordId === savedDebt.id && operation.type.startsWith('debt.') && operation.status !== 'synchronized')
+              const queueDebtUpdate = async () => saveLocalRecordAndOperation('debts', savedDebt.id, savedDebt, {
+                id: operationId, type: 'debt.payment', label: `Update debt ${savedDebt.invoice}`, target: `/api/debts/${encodeURIComponent(String(savedDebt.id))}`, method: 'PATCH', payload,
+                ...(priorOperations.length ? { dependsOn: priorOperations.map((operation) => operation.id) } : {}), recordCollection: 'debts', recordId: savedDebt.id,
               })
-              const result: unknown = await response.json().catch(() => null)
-              if (!response.ok) {
-                const message = typeof result === 'object' && result !== null && 'message' in result && typeof result.message === 'string' ? result.message : 'Debt could not be saved'
-                throw new Error(message)
+              let confirmedDebt = savedDebt
+              let queued = false
+              if (priorOperations.length || !shouldAttemptServerRequest()) { await queueDebtUpdate(); queued = true }
+              else {
+                let response: Response
+                try { response = await fetch(`/api/debts/${encodeURIComponent(String(savedDebt.id))}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+                catch (error) {
+                  if (!(error instanceof TypeError)) throw error
+                  await queueDebtUpdate(); queued = true
+                  response = null as unknown as Response
+                }
+                if (!queued) {
+                  if (!response.ok) {
+                    if (await shouldQueueAfterServerFailure(response)) {
+                      await queueDebtUpdate()
+                      queued = true
+                    } else {
+                      const result = await response.json().catch(() => null)
+                      throw new Error(typeof result?.message === 'string' ? result.message : `Debt update failed (${response.status})`)
+                    }
+                  } else {
+                    const result = await response.json().catch(() => null)
+                    confirmedDebt = result as Debt
+                    await writeLocalRecord('debts', confirmedDebt.id, confirmedDebt, false)
+                  }
+                }
               }
-              if (typeof result !== 'object' || result === null || !('id' in result)) throw new Error('The saved debt response is invalid')
-              const savedDebt = result as Debt
               const previousPaidAmount = (selectedDebt.payments ?? []).reduce((total, payment) => total + Number(payment.amount), 0)
-              const newPaidAmount = (savedDebt.payments ?? []).reduce((total, payment) => total + Number(payment.amount), 0)
-              const lastPaymentAmount = Number((savedDebt.payments ?? []).slice(-1)[0]?.amount ?? Math.max(0, newPaidAmount - previousPaidAmount) ?? 0)
-              const remaining = Math.max(0, savedDebt.amount - newPaidAmount)
-              setDebts((items) => items.map((item) => item.id === savedDebt.id ? savedDebt : item))
+              const newPaidAmount = (confirmedDebt.payments ?? []).reduce((total, payment) => total + Number(payment.amount), 0)
+              const lastPaymentAmount = Number((confirmedDebt.payments ?? []).slice(-1)[0]?.amount ?? Math.max(0, newPaidAmount - previousPaidAmount) ?? 0)
+              const remaining = Math.max(0, confirmedDebt.amount - newPaidAmount)
+              setDebts((items) => items.map((item) => item.id === confirmedDebt.id ? confirmedDebt : item))
+              if (queued) window.dispatchEvent(new Event('micro-mec-queue-changed'))
               setModal(null)
               setSelectedDebt(null)
               notify(
-                remaining === 0 ? `Debt for ${savedDebt.customer} marked fully paid` : `Payment received from ${savedDebt.customer}`,
-                remaining === 0 ? `Debt fully paid. Total paid: ${money(newPaidAmount, settings.currency)}` : `Payment of ${money(lastPaymentAmount, settings.currency)} received from ${savedDebt.customer}. Remaining balance: ${money(remaining, settings.currency)}`,
+                queued ? (remaining === 0 ? `Debt for ${confirmedDebt.customer} marked fully paid locally` : `Payment saved locally for ${confirmedDebt.customer}`) : (remaining === 0 ? `Debt for ${confirmedDebt.customer} marked fully paid` : `Payment saved for ${confirmedDebt.customer}`),
+                remaining === 0 ? `Debt fully paid. Total paid: ${money(newPaidAmount, settings.currency)}${queued ? '. Waiting for Sync Now.' : '.'}` : `Payment of ${money(lastPaymentAmount, settings.currency)} received from ${confirmedDebt.customer}. Remaining balance: ${money(remaining, settings.currency)}${queued ? '. Waiting for Sync Now.' : '.'}`,
                 true,
                 { type: 'payment', amount: lastPaymentAmount, currency: settings.currency, customer: savedDebt.customer, invoice: savedDebt.invoice, remaining },
               )
-              return savedDebt
+              return confirmedDebt
             }}
           />
         )}
@@ -979,29 +1258,59 @@ const formatCurrency = (amount: number) => {
                 <button className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-700" 
                 onClick={async () => {
                   if (deleteProduct) {
-              try {
-                await deleteProductOnServer(deleteProduct.id)
-
-              setProducts((items) =>
-              items.filter((p) => p.id !== deleteProduct.id)
-              )
+                    const target = deleteProduct
+                    try {
+                    const operationId = crypto.randomUUID()
+                    const payload = { id: target.id, operationId }
+                    const queuedOperations = await listQueuedOperations()
+                    const dependencies = queuedOperations.filter((operation) => {
+                      if (operation.status === 'synchronized') return false
+                      if (operation.recordId === target.id && operation.type.startsWith('product.')) return true
+                      if (operation.payload.productId === target.id) return true
+                      return ['items', 'lines'].some((key) => {
+                        const items = operation.payload[key]
+                        return Array.isArray(items) && items.some((item) => item && typeof item === 'object' && 'productId' in item && item.productId === target.id)
+                      })
+                    }).map((operation) => operation.id)
+                    const queueDelete = async () => {
+                      await saveLocalDeletionAndOperation('products', target.id, {
+                        id: operationId, type: 'product.delete', label: `Delete product ${target.name}`, target: `/api/products/${target.id}`, method: 'DELETE', payload,
+                        ...(dependencies.length ? { dependsOn: dependencies } : {}), recordCollection: 'products', recordId: target.id,
+                      })
+                      setProducts((items) => items.filter((product) => product.id !== target.id))
+                      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+                    }
+                let queued = false
+                if (dependencies.length || !shouldAttemptServerRequest()) { await queueDelete(); queued = true }
+                else {
+                  try { await deleteProductOnServer(target.id, operationId) }
+                  catch (error) {
+                    if (!(error instanceof TypeError)) throw error
+                    await queueDelete(); queued = true
+                  }
+                  if (!queued) {
+                    await deleteLocalRecord('products', target.id)
+                    setProducts((items) => items.filter((product) => product.id !== target.id))
+                  }
+                }
                notify(
-                `Product deleted: ${deleteProduct.name}`,
-                `Product was removed from inventory. Model: ${deleteProduct.model}. SKU: ${deleteProduct.sku}. Category: ${deleteProduct.category}. Last recorded stock: ${deleteProduct.stock} units.`,
+                `Product deleted: ${target.name}`,
+                `Product was removed from inventory. Model: ${target.model}. SKU: ${target.sku}. Category: ${target.category}. Last recorded stock: ${target.stock} units.${queued ? ' Saved locally and awaiting manual synchronization.' : ''}`,
                 true,
                    {
                 type: 'product',
-            product: deleteProduct.name,
-            quantity: deleteProduct.stock,
+            product: target.name,
+            quantity: target.stock,
   }
 )
+              if (queued) setToast('Product deletion saved on this device · waiting for Sync Now')
               setDeleteProduct(null)
                } catch (error) {
                console.error(error)
-             setToast('Failed to delete product')
+             setToast(error instanceof Error ? error.message : 'Failed to delete product')
              }
             }
-                   setDeleteProduct(null); notify('Stock deleted') }}>Delete stock</button>
+                   }}>Delete stock</button>
               </div>
             </section>
           </div>
@@ -1055,26 +1364,40 @@ const formatCurrency = (amount: number) => {
 
     try {
       const receiptId = deleteReceipt.id
-
-      const response = await fetch(
-        `/api/receipts/${receiptId}`,
-        {
-          method: 'DELETE',
+      const operationId = crypto.randomUUID()
+      const payload = { id: receiptId, operationId }
+      const earlier = (await listQueuedOperations()).filter((operation) => operation.type.startsWith('receipt.') && operation.recordId === receiptId && operation.status !== 'synchronized')
+      let queued = false
+      if (earlier.length || !shouldAttemptServerRequest()) {
+        await saveLocalDeletionAndOperation('receipts', receiptId, {
+          id: operationId, type: 'receipt.delete', label: `Delete stock receipt ${deleteReceipt.invoice}`, target: `/api/receipts/${receiptId}`, method: 'DELETE', payload,
+          dependsOn: earlier.map((operation) => operation.id), recordCollection: 'receipts', recordId: receiptId,
+        })
+        queued = true
+      } else {
+        let response: Response | null = null
+        try { response = await fetch(`/api/receipts/${receiptId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+        catch (error) { if (!(error instanceof TypeError)) throw error }
+        if (response && !response.ok) {
+          const result = await response.json().catch(() => null)
+          throw new Error(typeof result?.message === 'string' ? result.message : `Failed to delete stock receipt (${response.status})`)
         }
-      )
-
-      if (!response.ok) {
-        throw new Error('Failed to delete stock')
+        if (!response) {
+          await saveLocalDeletionAndOperation('receipts', receiptId, {
+            id: operationId, type: 'receipt.delete', label: `Delete stock receipt ${deleteReceipt.invoice}`, target: `/api/receipts/${receiptId}`, method: 'DELETE', payload,
+            recordCollection: 'receipts', recordId: receiptId,
+          })
+          queued = true
+        } else await deleteLocalRecord('receipts', receiptId)
       }
-
       setReceipts((items) =>
         items.filter((item) => item.id !== receiptId)
       )
-
+      if (queued) { setToast('Stock receipt deletion saved on this device · waiting for Sync Now'); window.dispatchEvent(new Event('micro-mec-queue-changed')) }
       setDeleteReceipt(null)
     } catch (error) {
       console.error('Failed to delete stock:', error)
-      setToast('Failed to delete stock')
+      setToast(error instanceof Error ? error.message : 'Failed to delete stock')
     }
   }}
       >
@@ -1085,6 +1408,11 @@ const formatCurrency = (amount: number) => {
   </div>
 )}
 
+        <footer className="dashboard-footer">
+          <strong>micro-mec</strong>
+          <span>Stock, sales, and customer accounts in one place.</span>
+          <small>© {new Date().getFullYear()} Micro-MEC</small>
+        </footer>
         {toast && <div className="toast"><Check />{toast}</div>}
       </main>
     </div>
@@ -1116,6 +1444,10 @@ function ProductTable({
   const [openId, setOpenId] = useState<number | null>(null)
   const [draft, setDraft] = useState<Product | null>(null)
   const [saving, setSaving] = useState(false)
+  const sortedProducts = useMemo(
+    () => [...products].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+    [products],
+  )
 
   const startEditing = (product: Product) => {
     setDraft({ ...product })
@@ -1171,7 +1503,7 @@ function ProductTable({
   }
 
   return (
-    <div className="table-wrap">
+    <div className={`table-wrap record-list-scroll record-scroll-30${sortedProducts.length > 30 ? ' is-scrollable' : ''}`}>
       <table>
         <thead>
           <tr>
@@ -1184,7 +1516,7 @@ function ProductTable({
           </tr>
         </thead>
         <tbody>
-          {products.map((product) => {
+          {sortedProducts.map((product) => {
             const isEditing = draft?.id === product.id
             const row = isEditing && draft ? draft : product
 
@@ -1366,10 +1698,14 @@ function ProductTable({
 
 function Receipts({
   receipts,
+  query,
+  statusFilter,
   onEdit,
   onDelete,
 }: {
   receipts: Receipt[]
+  query: string
+  statusFilter: string
   onEdit: (
     id: number,
     updates: Partial<Pick<Receipt, 'name' | 'model' | 'quantity' | 'invoice'>>
@@ -1378,6 +1714,10 @@ function Receipts({
 }) {
   const [editing, setEditing] = useState<Record<number, Receipt>>({})
   const [saving, setSaving] = useState<number | null>(null)
+  const visibleReceipts = useMemo(() => receipts
+    .filter((receipt) => `${receipt.name} ${receipt.model} ${receipt.invoice}`.toLowerCase().includes(query.toLowerCase()))
+    .filter(() => statusFilter === 'All' || statusFilter === 'Completed')
+    .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0) || b.id - a.id), [receipts, query, statusFilter])
 
   const startEditing = (receipt: Receipt) => {
     setEditing((current) => ({
@@ -1429,8 +1769,8 @@ function Receipts({
   }
 
   return (
-    <div className="receipt-list">
-      {receipts.map((r) => {
+    <div className={`receipt-list record-list-scroll record-scroll-30${visibleReceipts.length > 30 ? ' is-scrollable' : ''}`}>
+      {visibleReceipts.map((r) => {
         const draft = editing[r.id]
         const current = draft ?? r
 
@@ -1546,12 +1886,13 @@ function Receipts({
           </details>
         )
       })}
+      {!visibleReceipts.length && <div className="empty"><Package /><b>No matching stock receipts</b><span>Adjust your search or filters to find a receiving record.</span></div>}
     </div>
   )
 }
 
 function DebtTable({ debts, paid, onOpen, currency }: { debts: Debt[]; paid: boolean; onOpen: (d: Debt) => void; currency: string }) {
-  return <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Invoice</th><th>Receipt RN</th><th>Amount</th><th>Remaining</th>
+  return <div className={`table-wrap record-list-scroll record-scroll-30${debts.length > 30 ? ' is-scrollable' : ''}`}><table><thead><tr><th>Customer</th><th>Invoice</th><th>Receipt RN</th><th>Amount</th><th>Remaining</th>
   <th>{paid ? 'Paid at' : 'Due'}</th></tr></thead><tbody>{debts.map((d) => {
     const paidAmount = d.payments.reduce((a, p) => a + p.amount, 0)
     return <tr key={d.id} onClick={() => onOpen(d)} className="clickable-row"><td><div className="customer">
@@ -1775,10 +2116,10 @@ function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | '
     <div className="modal">
       <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
       <form onSubmit={onSubmit}>
-        <label>Name or reference<input name="name" required placeholder="e.g. Premium Rice 25kg" /></label>
+        <label>Name or reference<input name="name" required placeholder="e.g. 20,000mAh Power Bank" /></label>
         {type === 'product' && <div className="form-row">
-          <label>Category<select name="category" defaultValue="Groceries"><option>Groceries</option><option>Beverages</option><option>Household</option></select></label>
-          <label>Model number<input name="model" placeholder="e.g. MEC-RIC-2501" /></label>
+          <label>Category<input name="category" required placeholder="e.g. Power banks, Chargers, Earphones" /></label>
+          <label>Model number<input name="model" placeholder="e.g. MEC-PWB-20000" /></label>
           <label>Barcode (optional)<input name="barcode" type="text" inputMode="text" autoComplete="off" maxLength={128} placeholder="Keep leading zeroes" /></label>
           <label>Price<input name="price" type="number" min="0" step="0.01" required /></label>
           <label>Quantity<input name="stock" type="number" min="0" required /></label>

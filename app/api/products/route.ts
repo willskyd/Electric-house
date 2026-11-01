@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import clientPromise from "@/lib/mongodb";
 import { isValidBarcode, normalizeBarcode } from "@/lib/barcode";
 import { NextResponse } from "next/server";
 
 const DB_NAME = "Dashboard";
 const COLLECTION = "products";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -77,47 +79,50 @@ export async function POST(request: Request) {
     const client = await clientPromise();
     const db = client.db(DB_NAME);
 
-    if (barcode) {
-      const duplicateBarcode = await db.collection(COLLECTION).findOne({
-        $expr: {
-          $eq: [
-            { $trim: { input: { $cond: [{ $eq: [{ $type: "$barcode" }, "string"] }, "$barcode", ""] } } },
-            barcode,
-          ],
-        },
-      });
-      if (duplicateBarcode) {
-        return NextResponse.json(
-          { message: "That barcode is already assigned to another product" },
-          { status: 409 }
-        );
+    const collection = db.collection<any>(COLLECTION);
+    const operationId = typeof body.operationId === "string" ? body.operationId : "";
+    if (operationId && !UUID.test(operationId)) return NextResponse.json({ message: "Product operation ID is invalid" }, { status: 400 });
+    const productInput = { name: name.trim(), model: model.trim(), sku: sku.trim(), category: category.trim(), barcode, stock: parsedStock, price: parsedPrice, status: String(status).trim() };
+    const requestHash = createHash("sha256").update(JSON.stringify(productInput)).digest("hex");
+    if (operationId) {
+      const replay = await collection.findOne({ _id: operationId });
+      if (replay) {
+        if (replay.requestHash !== requestHash) return NextResponse.json({ message: "This product operation ID was used for different details" }, { status: 409 });
+        const { _id, requestHash: ignored, ...saved } = replay;
+        return NextResponse.json(saved);
       }
     }
-
-    const lastProduct = await db
-      .collection(COLLECTION)
+    if (barcode) {
+      const duplicateBarcode = await collection.findOne({
+        $expr: { $eq: [{ $trim: { input: { $cond: [{ $eq: [{ $type: "$barcode" }, "string"] }, "$barcode", ""] } } }, barcode] },
+      });
+      if (duplicateBarcode) return NextResponse.json({ message: "That barcode is already assigned to another product" }, { status: 409 });
+    }
+    const requestedId = body.id;
+    if (operationId && (typeof requestedId !== "number" || !Number.isSafeInteger(requestedId) || requestedId <= 0)) return NextResponse.json({ message: "A valid product ID is required for an offline product" }, { status: 400 });
+    let id: number;
+    if (operationId) {
+      id = requestedId as number;
+      if (await collection.findOne({ id })) return NextResponse.json({ message: "This product ID is already in use. Review the local product before syncing." }, { status: 409 });
+    } else {
+      const lastProduct = await collection
       .find({})
       .sort({ id: -1 })
       .limit(1)
       .toArray();
-
-    const id = lastProduct.length > 0 ? lastProduct[0].id + 1 : 1;
+      id = lastProduct.length > 0 ? lastProduct[0].id + 1 : 1;
+    }
 
     const product = {
+      ...(operationId ? { _id: operationId, requestHash, revision: 1 } : {}),
       id,
-      name: name.trim(),
-      model: model.trim(),
-      sku: sku.trim(),
-      category: category.trim(),
-      barcode,
-      stock: parsedStock,
-      price: parsedPrice,
-      status,
+      ...productInput,
     };
 
-    await db.collection(COLLECTION).insertOne(product);
+    await collection.insertOne(product);
 
-    return NextResponse.json(product, { status: 201 });
+    const { _id, requestHash: ignored, ...saved } = product;
+    return NextResponse.json(saved, { status: 201 });
   } catch (error) {
     console.error("Failed to create product:", error);
 

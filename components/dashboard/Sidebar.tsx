@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Boxes, ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, LogOut, Package, Settings, Sparkles, Store, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Boxes, ChevronDown, CircleDollarSign, ClipboardList, CreditCard, LayoutDashboard, LogOut, Package, Settings, Sparkles, Store, Users, X, RotateCcw, RefreshCw, Clock3 } from 'lucide-react'
 
 import type { Section } from './types'
 import { nav } from './data'
@@ -11,14 +11,18 @@ const iconMap = {
   Transfers: ArrowLeftRight,
   Debt: CreditCard,
   Paid: CircleDollarSign,
+  Pending: Clock3,
   Settings: Settings,
   'Team members': Users,
+  Returns: RotateCcw,
+  'Sync Center': RefreshCw,
 } as const
 
 export function Sidebar({
   section,
   sidebar,
   settings,
+  pendingCount = 0,
   onGo,
   onClose,
   onSignOut,
@@ -26,10 +30,13 @@ export function Sidebar({
   section: Section
   sidebar: boolean
   settings: { workspace: string }
+  pendingCount?: number
   onGo: (section: Section) => void
   onClose?: () => void
   onSignOut: () => void
 }) {
+  const adminPhone = (process.env.NEXT_PUBLIC_ADMIN_PHONE ?? '').replace(/[^\d+]/g, '')
+
   return (
     <aside className={`sidebar ${sidebar ? '' : 'sidebar-collapsed'}`}>
       <a href="/">
@@ -52,11 +59,12 @@ export function Sidebar({
       <nav>
         {nav.map(({ label }) => {
           const Icon = iconMap[label as keyof typeof iconMap] || LayoutDashboard
-          const displayLabel = label === 'New Stocks' ? 'Parking Shop' : label === 'Store' ? 'New Stocks' : label
+          const displayLabel = label
           return (
             <button key={label} className={section === label ? 'nav-item active' : 'nav-item'} onClick={() => onGo(label as Section)} title={!sidebar ? displayLabel : undefined}>
               <Icon />
               <span className="nav-label-text">{displayLabel}</span>
+              {label === 'Pending' && pendingCount > 0 && <b className="nav-count-badge">{pendingCount > 99 ? '99+' : pendingCount}</b>}
               {label === 'New Stocks' }
             </button>
           )
@@ -78,7 +86,9 @@ export function Sidebar({
             <Sparkles />
             <div>
               <b>Need a hand?</b>
-              <small>Contact your admin</small>
+              {adminPhone
+                ? <a href={`tel:${adminPhone}`}><small>Call your admin</small></a>
+                : <small>Set admin phone to enable calls</small>}
             </div>
           </>}
         </div>

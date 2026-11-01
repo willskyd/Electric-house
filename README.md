@@ -22,6 +22,12 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Admin sign-in
+
+The local development admin account is `adminmicro.com` with password `Admin123`. Configure `MICRO_MEC_ADMIN_EMAIL` and `MICRO_MEC_ADMIN_PASSWORD` in the server environment before deploying; production does not use development credentials. Set `JWT_SECRET` to a random secret of at least 32 characters. Sign-in creates an HTTP-only session cookie, and the API routes require that session.
+
+Set `NEXT_PUBLIC_ADMIN_PHONE` to the administrator's phone number, including country code, to enable the call-admin links in the dashboard.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 ## Learn More

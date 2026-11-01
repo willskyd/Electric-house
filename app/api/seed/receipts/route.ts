@@ -6,11 +6,11 @@ const DB_NAME = "Dashboard";
 const receipts = [
   {
     id: 1,
-    name: "Premium Rice 25kg",
-    model: "MEC-RIC-2501",
-    quantity: 180,
+    name: "20W USB-C Charger",
+    model: "MEC-CHG-20W",
+    quantity: 18,
     invoice: "REC-1001",
-    date: "Jun 20, 2026, 4:20 PM",
+    date: "Oct 30, 2026, 4:20 PM",
   },
 ];
 

@@ -25,7 +25,7 @@ const MAX_BODY = 16 * 1024;
 const MAX_ITEMS = 40;
 
 async function consumeAuthorization(req) {
-  const parts = /^Bearer ([a-f0-9]{32})\.([a-f0-9]{64})$/i.exec(req.headers.authorization || '');
+  const parts = /^Bearer\s+([a-f0-9]{32})\.([a-f0-9]{64})$/i.exec(String(req.headers.authorization || '').trim());
   if (!parts) return false;
   let secret;
   try { secret = await loadSecret(); } catch { return null; }

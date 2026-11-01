@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
 
 const DB_NAME = "Dashboard";
 const COLLECTION = "receipts";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // GET all receipts
 export async function GET() {
@@ -55,31 +57,45 @@ export async function POST(request: Request) {
 
     const client = await clientPromise();
     const db = client.db(DB_NAME);
+    const collection = db.collection<any>(COLLECTION);
+    const operationId = typeof body.operationId === "string" ? body.operationId : "";
+    if (operationId && !UUID.test(operationId)) return NextResponse.json({ message: "Receipt operation ID is invalid" }, { status: 400 });
+    const idempotentReceipt = { name: String(name).trim(), model: String(model).trim(), quantity: Number(quantity), invoice: String(invoice).trim(), date: String(date).trim() };
+    if (operationId) {
+      const replay = await collection.findOne({ _id: operationId });
+      if (replay) {
+        const hash = createHash("sha256").update(JSON.stringify(idempotentReceipt)).digest("hex");
+        if (replay.requestHash !== hash) return NextResponse.json({ message: "Receipt operation ID was used for different details" }, { status: 409 });
+        const { _id, requestHash, ...saved } = replay;
+        return NextResponse.json(saved);
+      }
+    }
 
-    const lastReceipt = await db
-      .collection(COLLECTION)
+    const requestedId = body.id;
+    if (operationId && (!Number.isSafeInteger(requestedId) || requestedId <= 0)) return NextResponse.json({ message: "A valid receipt ID is required" }, { status: 400 });
+    let id: number;
+    if (operationId) {
+      id = requestedId as number;
+      if (await collection.findOne({ id })) return NextResponse.json({ message: "This receipt ID is already in use" }, { status: 409 });
+    } else {
+      const lastReceipt = await collection
       .find({})
       .sort({ id: -1 })
       .limit(1)
       .toArray();
-
-    const id =
-      lastReceipt.length > 0
-        ? lastReceipt[0].id + 1
-        : 1;
+      id = lastReceipt.length > 0 ? lastReceipt[0].id + 1 : 1;
+    }
 
     const receipt = {
+      ...(operationId ? { _id: operationId, requestHash: createHash("sha256").update(JSON.stringify(idempotentReceipt)).digest("hex"), revision: 1 } : {}),
       id,
-      name,
-      model,
-      quantity: Number(quantity),
-      invoice,
-      date,
+      ...idempotentReceipt,
     };
 
-    await db.collection(COLLECTION).insertOne(receipt);
+    await collection.insertOne(receipt);
 
-    return NextResponse.json(receipt, { status: 201 });
+    const { _id, requestHash, ...saved } = receipt;
+    return NextResponse.json(saved, { status: 201 });
   } catch (error) {
     console.error("Failed to create receipt:", error);
 

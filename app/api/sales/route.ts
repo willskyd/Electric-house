@@ -17,6 +17,7 @@ type ProductDocument = Document & {
   stock: number;
   price: number;
   status?: string;
+  reservedStock?: number;
 };
 
 type SaleDocument = Document & {
@@ -25,6 +26,7 @@ type SaleDocument = Document & {
   receiptNumber: string;
   createdAt: Date;
   requestHash: string;
+  items: Array<{ productId: number; quantity: number }>;
 };
 
 class CheckoutError extends Error {
@@ -195,6 +197,7 @@ export async function POST(request: Request) {
     const sales = db.collection<SaleDocument>(SALES_COLLECTION);
     const session: ClientSession = client.startSession();
     let committedSale: SaleDocument | null = null;
+    let committedInventory: ProductDocument[] = [];
     let replayed = false;
 
     try {
@@ -206,6 +209,7 @@ export async function POST(request: Request) {
           }
           committedSale = existingSale;
           replayed = true;
+          committedInventory = await products.find({ id: { $in: existingSale.items.map((item) => item.productId) } }, { session }).toArray();
           return;
         }
 
@@ -227,8 +231,9 @@ export async function POST(request: Request) {
           if (String(product.status ?? "").trim().toLowerCase() === "discontinued") {
             throw new CheckoutError(`${product.name} is discontinued and cannot be sold`, 409);
           }
-          if (product.stock < item.quantity) {
-            throw new CheckoutError(`Insufficient stock for ${product.name}. Available: ${product.stock}`, 409);
+          const availableStock = product.stock - Number(product.reservedStock ?? 0);
+          if (availableStock < item.quantity) {
+            throw new CheckoutError(`Insufficient stock for ${product.name}. Available: ${Math.max(0, availableStock)}`, 409);
           }
           if (typeof product.price !== "number" || !Number.isFinite(product.price) || product.price < 0 || product.price > Number.MAX_SAFE_INTEGER / 100) {
             throw new CheckoutError(`${product.name} has an invalid selling price`, 409);
@@ -265,7 +270,7 @@ export async function POST(request: Request) {
               ? "Low stock"
               : "In stock";
           const updated = await products.updateOne(
-            { id: item.productId, stock: { $gte: item.quantity }, status: { $not: /^Discontinued$/i } },
+            { id: item.productId, status: { $not: /^Discontinued$/i }, $expr: { $gte: [{ $subtract: ['$stock', { $ifNull: ['$reservedStock', 0] }] }, item.quantity] } },
             { $inc: { stock: -item.quantity }, $set: { status } },
             { session },
           );
@@ -282,6 +287,7 @@ export async function POST(request: Request) {
             description: `Sold ${item.quantity} units on receipt ${idempotencyKey}`,
           });
         }
+        committedInventory = await products.find({ id: { $in: requestedIds } }, { session }).toArray();
 
         const workspace = typeof settings?.workspace === "string" && settings.workspace.trim()
           ? settings.workspace.trim()
@@ -320,7 +326,8 @@ export async function POST(request: Request) {
       if (isDuplicateKeyError(error)) {
         const existingSale = await sales.findOne({ _id: idempotencyKey });
         if (existingSale?.requestHash === requestHash) {
-          return NextResponse.json(publicSale(existingSale), { status: 200 });
+          const inventory = await db.collection<ProductDocument>("products").find({ id: { $in: existingSale.items.map((item) => item.productId) } }).toArray();
+          return NextResponse.json({ ...publicSale(existingSale), inventory }, { status: 200 });
         }
         if (existingSale) throw new CheckoutError("This checkout key was already used for a different cart", 409);
       }
@@ -330,7 +337,7 @@ export async function POST(request: Request) {
     }
 
     if (!committedSale) throw new Error("Checkout transaction finished without a saved sale");
-    return NextResponse.json(publicSale(committedSale), { status: replayed ? 200 : 201 });
+    return NextResponse.json({ ...publicSale(committedSale), inventory: committedInventory }, { status: replayed ? 200 : 201 });
   } catch (error) {
     if (error instanceof CheckoutError) {
       return NextResponse.json({ message: error.message }, { status: error.status });

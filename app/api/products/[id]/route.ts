@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import clientPromise from "@/lib/mongodb";
 import { isValidBarcode, normalizeBarcode } from "@/lib/barcode";
 import { NextResponse } from "next/server";
+import { ensureCollections, InventoryError, INVENTORY_DB, isTransactionUnavailable, withInventoryTransaction } from "@/lib/inventory";
 
 const DB_NAME = "Dashboard";
 const COLLECTION = "products";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,9 +101,27 @@ export async function PATCH(
 
     const client = await clientPromise();
     const db = client.db(DB_NAME);
+    const collection = db.collection<any>(COLLECTION);
+    const operationId = typeof body.operationId === "string" ? body.operationId : "";
+    const expectedRevision = body.expectedRevision;
+    if (operationId && (!UUID.test(operationId) || typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) return NextResponse.json({ message: "Product operation ID and revision are required" }, { status: 400 });
+    const requestHash = createHash("sha256").update(JSON.stringify(updates)).digest("hex");
+    const existing = await collection.findOne({ id: productId });
+    if (!existing) return NextResponse.json({ message: "Product not found" }, { status: 404 });
+    if (typeof updates.stock === "number" && updates.stock < Number(existing.reservedStock ?? 0)) return NextResponse.json({ message: "Stock cannot be reduced below quantities reserved for pending orders" }, { status: 409 });
+    if (operationId) {
+      const replay = (existing.appliedOperations ?? []).find((operation: any) => operation.id === operationId);
+      if (replay) {
+        if (replay.hash !== requestHash) return NextResponse.json({ message: "This product operation ID was used for different updates" }, { status: 409 });
+        const { _id, appliedOperations, ...saved } = existing;
+        return NextResponse.json(saved);
+      }
+      const revision = Number.isSafeInteger(existing.revision) ? existing.revision : 0;
+      if (revision !== expectedRevision) return NextResponse.json({ message: "Product changed on the server. Review it before retrying." }, { status: 409 });
+    }
 
     if (typeof updates.barcode === "string" && updates.barcode) {
-      const duplicateBarcode = await db.collection(COLLECTION).findOne({
+      const duplicateBarcode = await collection.findOne({
         $expr: {
           $eq: [
             { $trim: { input: { $cond: [{ $eq: [{ $type: "$barcode" }, "string"] }, "$barcode", ""] } } },
@@ -117,22 +138,32 @@ export async function PATCH(
       }
     }
 
-    const result = await db.collection(COLLECTION).updateOne(
-      { id: productId },
-      { $set: updates }
-    );
+    const filter: Record<string, unknown> = { id: productId };
+    let update: Record<string, unknown> = { $set: updates };
+    if (operationId) {
+      const revision = Number.isSafeInteger(existing.revision) ? existing.revision : 0;
+      filter.revision = existing.revision ?? { $exists: false };
+      filter.appliedOperations = { $not: { $elemMatch: { id: operationId } } };
+      update = { $set: { ...updates, revision: revision + 1 }, $push: { appliedOperations: { id: operationId, hash: requestHash } } };
+    }
+    const result = await collection.updateOne(filter, update as any);
 
     if (result.matchedCount === 0) {
+      const latest = await collection.findOne({ id: productId });
+      if (latest && operationId) return NextResponse.json({ message: "Product changed on the server. Review the current record before retrying." }, { status: 409 });
       return NextResponse.json(
         { message: "Product not found" },
         { status: 404 }
       );
     }
 
-    const updatedProduct = await db.collection(COLLECTION).findOne({
+    const updatedProduct = await collection.findOne({
       id: productId,
     });
-
+    if (operationId) {
+      const { _id, appliedOperations, ...saved } = updatedProduct;
+      return NextResponse.json(saved);
+    }
     return NextResponse.json(updatedProduct);
   } catch (error) {
     console.error("Failed to update product:", error);
@@ -159,18 +190,32 @@ export async function DELETE(
       );
     }
 
+    const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    const operationId = typeof body?.operationId === "string" ? body.operationId : "";
+    if (operationId && !UUID.test(operationId)) return NextResponse.json({ message: "Product delete operation ID is invalid" }, { status: 400 });
     const client = await clientPromise();
-    const db = client.db(DB_NAME);
-
-    const result = await db.collection(COLLECTION).deleteOne({
-      id: productId,
-    });
-
-    if (result.deletedCount === 0) {
-      return NextResponse.json(
-        { message: "Product not found" },
-        { status: 404 }
-      );
+    const db = client.db(INVENTORY_DB);
+    if (!operationId) {
+      const result = await db.collection(COLLECTION).deleteOne({ id: productId });
+      if (result.deletedCount === 0) return NextResponse.json({ message: "Product not found" }, { status: 404 });
+    } else {
+      await ensureCollections(db, ["operationLedger"]);
+      const requestHash = createHash("sha256").update(JSON.stringify({ action: "product.delete", productId })).digest("hex");
+      await withInventoryTransaction(client, async (session) => {
+        const ledger = db.collection<any>("operationLedger");
+        const replay = await ledger.findOne({ _id: operationId }, { session });
+        if (replay) {
+          if (replay.requestHash !== requestHash) throw new InventoryError("This delete operation ID was used for different product details", 409);
+          return;
+        }
+        const products = db.collection<any>(COLLECTION);
+        const existing = await products.findOne({ id: productId }, { session });
+        if (!existing) throw new InventoryError("Product not found", 404);
+        if (Number(existing.reservedStock ?? 0) > 0) throw new InventoryError("Product has stock reserved by a pending order and cannot be deleted", 409);
+        const removed = await products.deleteOne({ id: productId, $expr: { $eq: [{ $ifNull: ["$reservedStock", 0] }, 0] } }, { session });
+        if (removed.deletedCount !== 1) throw new InventoryError("Product stock changed while deleting it. Review inventory and retry", 409);
+        await ledger.insertOne({ _id: operationId, requestHash, type: "product.delete", recordId: productId, createdAt: new Date() }, { session });
+      });
     }
 
     return NextResponse.json({
@@ -178,6 +223,8 @@ export async function DELETE(
       message: "Product deleted successfully",
     });
   } catch (error) {
+    if (error instanceof InventoryError) return NextResponse.json({ message: error.message }, { status: error.status });
+    if (isTransactionUnavailable(error)) return NextResponse.json({ message: "Product deletion requires MongoDB transactions; no product was deleted" }, { status: 503 });
     console.error("Failed to delete product:", error);
 
     return NextResponse.json(

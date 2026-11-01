@@ -62,6 +62,7 @@ export function TransfersSection({ products, productsLoading, productsError, per
   const [openMenuId, setOpenMenuId] = useState('')
   const [expandedTransferId, setExpandedTransferId] = useState('')
   const [search, setSearch] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
   const [branchFilter, setBranchFilter] = useState('All')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -79,10 +80,11 @@ export function TransfersSection({ products, productsLoading, productsError, per
     const searchable = `${transfer.reference} ${transfer.destinationNameAtTransfer} ${currentBranchName} ${transfer.sourceLocation} ${transfer.manualItems ?? ''} ${transfer.notes} ${transfer.lines.map((line) => `${line.productName} ${line.sku} ${line.manualSourceText ?? ''}`).join(' ')}`.toLocaleLowerCase()
     const day = dateOnly(transfer.transferDate)
     return searchable.includes(search.trim().toLocaleLowerCase()) && (branchFilter === 'All' || transfer.destinationBranchId === branchFilter) && (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo)
-  }).sort((a, b) => b.transferDate.localeCompare(a.transferDate) || b.createdAt.localeCompare(a.createdAt)), [transfers, branches, search, branchFilter, dateFrom, dateTo])
+  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.transferDate.localeCompare(a.transferDate)), [transfers, branches, search, branchFilter, dateFrom, dateTo])
+  const displayedRecords = showHistory ? records : records.slice(0, 20)
 
   const totalLines = transfers.reduce((total, transfer) => total + transfer.lines.length, 0)
-  const latestTransfer = [...transfers].sort((a, b) => b.transferDate.localeCompare(a.transferDate) || b.createdAt.localeCompare(a.createdAt))[0]
+  const latestTransfer = [...transfers].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.transferDate.localeCompare(a.transferDate))[0]
   const updateLine = (index: number, key: keyof DraftLine, value: string) => setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }))
 
   const addManualProposal = (proposal: ManualProposal) => {
@@ -208,14 +210,14 @@ export function TransfersSection({ products, productsLoading, productsError, per
       </form>
     </section>}
 
-    <section className="prototype-panel"><div className="prototype-history-heading"><div><span className="prototype-kicker">Dispatch log</span><h2>Transfer history</h2><p>{transfers.length} saved transfer{transfers.length === 1 ? '' : 's'} · stock adjustments are traceable</p></div><label className="prototype-search"><Search size={16} /><input aria-label="Search transfer history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search transfers" /></label></div>
+    <section className="prototype-panel"><div className="prototype-history-heading"><div><span className="prototype-kicker">Dispatch log</span><h2>Transfer history</h2><p>{transfers.length} saved transfer{transfers.length === 1 ? '' : 's'} · stock adjustments are traceable</p></div><div className="prototype-history-controls"><label className="prototype-search"><Search size={16} /><input aria-label="Search transfer history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search transfers" /></label>{records.length > 20 && <button type="button" className="secondary-button prototype-history-toggle" onClick={() => setShowHistory((value) => !value)} aria-expanded={showHistory}>{showHistory ? 'Back to Recent' : 'View History'}</button>}</div></div>
       <div className="prototype-filters"><label>Branch<select aria-label="Filter by branch" value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}><option value="All">All branches</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label>From<input aria-label="Filter transfers from date" type="date" value={dateFrom} max={dateTo || today} onChange={(event) => setDateFrom(event.target.value)} /></label><label>To<input aria-label="Filter transfers through date" type="date" value={dateTo} min={dateFrom || undefined} max={today} onChange={(event) => setDateTo(event.target.value)} /></label><button type="button" className="prototype-detail-button" onClick={() => { setSearch(''); setBranchFilter('All'); setDateFrom(''); setDateTo('') }}>Reset filters</button></div>
       {records.length === 0 ? <div className="prototype-empty"><ArrowLeftRight size={25} /><b>{transfers.length ? 'No matching transfers' : 'No transfers recorded yet'}</b><span>{transfers.length ? 'Adjust or clear the search, branch, or date filters.' : 'Use New Transfer to post goods sent to a branch.'}</span></div> : <>
         <div className="prototype-table-wrap"><table className="prototype-table"><thead><tr><th>Reference / date</th><th>Destination</th><th>Product lines</th><th>Stock units</th><th>Actions</th></tr></thead><tbody>
-          {records.map((transfer) => <TransferTableRow key={transfer.id} transfer={transfer} branches={branches} expanded={expandedTransferId === transfer.id} menuOpen={openMenuId === transfer.id} onToggle={() => setExpandedTransferId((current) => current === transfer.id ? '' : transfer.id)} onMenu={() => setOpenMenuId((current) => current === transfer.id ? '' : transfer.id)} onCloseMenu={() => setOpenMenuId('')} onEdit={() => openEdit(transfer)} onView={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} onHistory={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} />)}
+          {displayedRecords.map((transfer) => <TransferTableRow key={transfer.id} transfer={transfer} branches={branches} expanded={expandedTransferId === transfer.id} menuOpen={openMenuId === transfer.id} onToggle={() => setExpandedTransferId((current) => current === transfer.id ? '' : transfer.id)} onMenu={() => setOpenMenuId((current) => current === transfer.id ? '' : transfer.id)} onCloseMenu={() => setOpenMenuId('')} onEdit={() => openEdit(transfer)} onView={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} onHistory={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} />)}
         </tbody></table></div>
-        <div className="prototype-mobile-list">{records.map((transfer) => <TransferCard key={transfer.id} transfer={transfer} branches={branches} expanded={expandedTransferId === transfer.id} menuOpen={openMenuId === transfer.id} onToggle={() => setExpandedTransferId((current) => current === transfer.id ? '' : transfer.id)} onMenu={() => setOpenMenuId((current) => current === transfer.id ? '' : transfer.id)} onCloseMenu={() => setOpenMenuId('')} onEdit={() => openEdit(transfer)} onView={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} onHistory={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} />)}</div>
-        <p className="prototype-result-count">Showing {records.length} of {transfers.length} transfers</p>
+        <div className="prototype-mobile-list">{displayedRecords.map((transfer) => <TransferCard key={transfer.id} transfer={transfer} branches={branches} expanded={expandedTransferId === transfer.id} menuOpen={openMenuId === transfer.id} onToggle={() => setExpandedTransferId((current) => current === transfer.id ? '' : transfer.id)} onMenu={() => setOpenMenuId((current) => current === transfer.id ? '' : transfer.id)} onCloseMenu={() => setOpenMenuId('')} onEdit={() => openEdit(transfer)} onView={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} onHistory={() => { setExpandedTransferId(transfer.id); setOpenMenuId('') }} />)}</div>
+        <p className="prototype-result-count">Showing {displayedRecords.length} of {records.length} matching transfers</p>
       </>}
     </section>
   </div>

@@ -16,6 +16,7 @@ export type InventoryProduct = Document & {
   stock: number;
   price?: number;
   status?: string;
+  reservedStock?: number;
 };
 
 export class InventoryError extends Error {
@@ -75,12 +76,13 @@ export async function applyStockDelta(
     throw new InventoryError(`${product.name || "Product"} has invalid inventory data`, 409);
   }
   const nextStock = Math.round((product.stock + delta) * 1000) / 1000;
-  if (!Number.isFinite(nextStock) || nextStock < 0 || nextStock > 1_000_000_000) {
-    throw new InventoryError(`Insufficient stock for ${product.name}. Available: ${product.stock}`, 409);
+  const reservedStock = Number((product as InventoryProduct & { reservedStock?: number }).reservedStock ?? 0);
+  if (!Number.isFinite(reservedStock) || reservedStock < 0 || !Number.isFinite(nextStock) || nextStock < reservedStock || nextStock > 1_000_000_000) {
+    throw new InventoryError(`Insufficient stock for ${product.name}. Available: ${Math.max(0, product.stock - reservedStock)}`, 409);
   }
   const status = nextStock <= 0 ? "Out of stock" : nextStock <= lowStockThreshold ? "Low stock" : "In stock";
   const result = await products.updateOne(
-    { id: product.id, stock: product.stock },
+    { id: product.id, stock: product.stock, $expr: { $gte: [{ $add: ['$stock', delta] }, { $ifNull: ['$reservedStock', 0] }] } },
     { $inc: { stock: delta }, $set: { status } },
     { session },
   );

@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Barcode, CalendarDays, Check, FileDown, Minus, Plus, Printer, Search, ShoppingCart, Trash2, X } from 'lucide-react'
+import { Barcode, CalendarDays, Check, Clock3, FileDown, Minus, Plus, Printer, Search, ShoppingCart, Trash2, X } from 'lucide-react'
 
-import type { Product, Sale } from './types'
+import type { PendingOrder, Product, Sale } from './types'
 import { money } from './utils'
+import { listQueuedOperations, readLocalCollection, saveOfflineSaleAndOperation, savePendingOrderAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '@/lib/offline-queue'
 
 type CartLine = { product: Product; quantity: number }
 type PendingCheckout = {
@@ -25,6 +26,10 @@ function formatSaleDate(value: string) {
 
 function normalizeCode(value: string) {
   return value.trim()
+}
+
+function availableStock(product: Product) {
+  return Math.max(0, product.stock - Number(product.reservedStock ?? 0))
 }
 
 function isSaleLine(value: unknown): boolean {
@@ -105,8 +110,12 @@ export function PosCart({
   productsError,
   currency,
   workspace,
+  lowStockThreshold,
   onRefreshProducts,
+  onLocalSale,
   onOpen,
+  onOrderCreated,
+  onRegisterPrint,
 }: {
   active: boolean
   products: Product[]
@@ -114,8 +123,12 @@ export function PosCart({
   productsError: string
   currency: string
   workspace: string
+  lowStockThreshold: number
   onRefreshProducts: () => Promise<Product[]>
+  onLocalSale: (products: Product[]) => void
   onOpen: () => void
+  onOrderCreated: (order: PendingOrder) => void
+  onRegisterPrint: (print: (sale: Sale) => Promise<void>) => void
 }) {
   const [cart, setCart] = useState<CartLine[]>([])
   const cartRef = useRef<CartLine[]>([])
@@ -125,6 +138,12 @@ export function PosCart({
   const [message, setMessage] = useState('')
   const [scannerReady, setScannerReady] = useState(false)
   const [cashTendered, setCashTendered] = useState('')
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const customerNameInput = useRef<HTMLInputElement>(null)
+  const customerPhoneInput = useRef<HTMLInputElement>(null)
+  const [supplyLoading, setSupplyLoading] = useState(false)
+  const supplyLock = useRef(false)
   const [pendingCheckout, setPendingCheckout] = useState<PendingCheckout | null>(null)
   const pendingCheckoutRef = useRef<PendingCheckout | null>(null)
   const [checkoutLoading, setCheckoutLoading] = useState(false)
@@ -157,11 +176,33 @@ export function PosCart({
   const printLock = useRef(false)
   const archiveRequestRef = useRef(0)
 
+  useEffect(() => {
+    let cancelled = false
+    const refreshLocalSales = () => void Promise.all([readLocalCollection<Sale>('sales'), listQueuedOperations()]).then(([cachedSales, operations]) => {
+      if (cancelled) return
+      const queuedSales = operations.flatMap((operation) => {
+        if (operation.type === 'sale.create' && operation.status !== 'synchronized' && isSale(operation.payload.localSale)) return [operation.payload.localSale]
+        if (operation.type === 'pending-order.accept' && operation.status !== 'synchronized' && isSale(operation.payload.localSale)) return [operation.payload.localSale]
+        return []
+      })
+      const localSales = [...queuedSales, ...cachedSales].filter((sale, index, all) => all.findIndex((item) => item.id === sale.id) === index)
+      setRecentSales((current) => [...localSales, ...current.filter((sale) => !localSales.some((local) => local.id === sale.id))])
+    }).catch(() => undefined)
+    refreshLocalSales()
+    window.addEventListener('micro-mec-queue-changed', refreshLocalSales)
+    return () => { cancelled = true; window.removeEventListener('micro-mec-queue-changed', refreshLocalSales) }
+  }, [])
+
   const updateCart = useCallback((update: (lines: CartLine[]) => CartLine[]) => {
     const next = update(cartRef.current)
     cartRef.current = next
     setCart(next)
   }, [])
+
+  useEffect(() => {
+    if (!products.length) return
+    updateCart((lines) => lines.map((line) => ({ ...line, product: products.find((item) => item.id === line.product.id) ?? line.product })))
+  }, [products, updateCart])
 
   const filteredProducts = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -247,7 +288,13 @@ export function PosCart({
         if (!response.ok) throw new Error('Saved sales history is unavailable')
         const result: unknown = await response.json()
         if (!isSalesPage(result)) throw new Error('Saved sales history returned invalid data')
-        if (!cancelled) setRecentSales(result.sales)
+        if (!cancelled) {
+          await Promise.all(result.sales.map((sale) => writeLocalRecord('sales', sale.id, sale, false)))
+          const [queued, cachedSales] = await Promise.all([listQueuedOperations().catch(() => []), readLocalCollection<Sale>('sales').catch(() => [])])
+          const queuedSales = queued.filter((operation) => operation.type === 'sale.create' && operation.status !== 'synchronized').map((operation) => operation.payload.localSale).filter(isSale)
+          const localSales = [...queuedSales, ...cachedSales].filter((sale, index, all) => all.findIndex((item) => item.id === sale.id) === index)
+          setRecentSales([...localSales, ...result.sales.filter((sale) => !localSales.some((item) => item.id === sale.id))].slice(0, 20))
+        }
       })
       .catch((error: unknown) => {
         console.error('Failed to load saved sales:', error)
@@ -299,12 +346,13 @@ export function PosCart({
       setMessage(`${product.name} is discontinued and cannot be sold.`)
       return
     }
-    if (!Number.isFinite(product.stock) || product.stock <= 0) {
+    const available = availableStock(product)
+    if (!Number.isFinite(available) || available <= 0) {
       setMessage(`${product.name} is out of stock.`)
       return
     }
-    if (nextQuantity > product.stock) {
-      setMessage(`Insufficient stock for ${product.name}. Available: ${product.stock}.`)
+    if (nextQuantity > available) {
+      setMessage(`Insufficient stock for ${product.name}. Available: ${available}.`)
       return
     }
     updateCart((lines) => current
@@ -317,7 +365,7 @@ export function PosCart({
     setQuantityDrafts((drafts) => ({ ...drafts, [id]: rawValue }))
     const quantity = Number(rawValue)
     const line = cartRef.current.find((item) => item.product.id === id)
-    if (rawValue && line && Number.isFinite(quantity) && quantity > 0 && quantity <= line.product.stock &&
+    if (rawValue && line && Number.isFinite(quantity) && quantity > 0 && quantity <= availableStock(line.product) &&
       Math.abs(quantity * 1000 - Math.round(quantity * 1000)) <= 0.000001) {
       updateCart((lines) => lines.map((item) => item.product.id === id ? { ...item, quantity } : item))
       setMessage('')
@@ -393,8 +441,8 @@ export function PosCart({
       setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next })
       return
     }
-    if (!line || quantity > line.product.stock) {
-      setMessage(`Insufficient stock for ${line?.product.name ?? 'this product'}. Available: ${line?.product.stock ?? 0}.`)
+    if (!line || quantity > availableStock(line.product)) {
+      setMessage(`Insufficient stock for ${line?.product.name ?? 'this product'}. Available: ${line ? availableStock(line.product) : 0}.`)
       setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next })
       return
     }
@@ -403,7 +451,8 @@ export function PosCart({
     setMessage('')
   }
 
-  const markSaleCompleted = async (sale: Sale) => {
+  const markSaleCompleted = async (sale: Sale, locallyQueued = false) => {
+    await writeLocalRecord('sales', sale.id, sale, locallyQueued).catch((error) => console.warn('Could not cache completed sale history:', error))
     updateCart(() => [])
     setQuantityDrafts({})
     setCashTendered('')
@@ -411,8 +460,9 @@ export function PosCart({
     setLastSale(sale)
     setRecentSales((sales) => [sale, ...sales.filter((item) => item.id !== sale.id)].slice(0, 10))
     setSalesRefresh((value) => value + 1)
-    setMessage(`Sale ${sale.receiptNumber} saved.`)
-    void printSale(sale)
+    setMessage(locallyQueued ? `Sale ${sale.receiptNumber} saved on this device. It is pending synchronization.` : `Sale ${sale.receiptNumber} saved.`)
+    if (!locallyQueued) void printSale(sale)
+    if (locallyQueued) return
     try {
       await onRefreshProducts()
     } catch (error) {
@@ -474,12 +524,70 @@ export function PosCart({
     setCheckoutLoading(true)
     setMessage('Checkout processing…')
     setPrintError('')
+    const saveOfflineCheckout = async () => {
+      const localLines = cartRef.current.map(({ product, quantity }) => ({ productId: product.id, name: product.name, sku: product.sku, barcode: product.barcode ?? '', quantity, unitPriceMinor: Math.round(product.price * 100), lineTotalMinor: Math.round(Math.round(product.price * 100) * quantity) }))
+      const totalMinor = localLines.reduce((sum, line) => sum + line.lineTotalMinor, 0)
+      if (!Number.isSafeInteger(totalMinor) || totalMinor < 0 || localLines.some((line) => !Number.isSafeInteger(line.unitPriceMinor) || line.unitPriceMinor < 0 || !Number.isSafeInteger(line.lineTotalMinor) || line.lineTotalMinor < 0)) throw new Error('The cart total is outside the supported payment range.')
+      if (Math.round(request.cashTendered * 100) < totalMinor) throw new Error('Cash received is less than the amount due.')
+      const localSale: Sale = { id: request.idempotencyKey, receiptNumber: `LOCAL-${request.idempotencyKey.slice(0, 8).toUpperCase()}`, businessName: workspace, currency, createdAt: new Date().toISOString(), items: localLines, subtotalMinor: totalMinor, discountMinor: 0, taxMinor: 0, totalMinor, payment: { method: 'cash', status: 'paid', amountTenderedMinor: Math.round(request.cashTendered * 100), changeMinor: Math.max(0, Math.round(request.cashTendered * 100) - totalMinor) } }
+      const queuedOperations = await listQueuedOperations()
+      const productDependencies = queuedOperations.filter((operation) => {
+        if (operation.status === 'synchronized') return false
+        const referencedIds = new Set<number>()
+        if (operation.type.startsWith('product.') && typeof operation.recordId === 'number') referencedIds.add(operation.recordId)
+        if (typeof operation.payload.productId === 'number') referencedIds.add(operation.payload.productId)
+        for (const key of ['items', 'lines']) {
+          const rows = operation.payload[key]
+          if (Array.isArray(rows)) for (const row of rows) if (row && typeof row === 'object' && 'productId' in row && typeof row.productId === 'number') referencedIds.add(row.productId)
+        }
+        return localLines.some((line) => referencedIds.has(line.productId)) && /^(product\.|store\.receipt\.|transfer\.|pending-order\.|sale\.)/.test(operation.type)
+      }).map((operation) => operation.id)
+      const stockUpdates = await saveOfflineSaleAndOperation(localSale, {
+        id: request.idempotencyKey, type: 'sale.create', label: `POS sale ${localSale.receiptNumber}`, target: '/api/sales', method: 'POST', payload: { ...request, localSale, lowStockThreshold },
+        ...(productDependencies.length ? { dependsOn: productDependencies } : {}),
+      }, localLines.map((line) => ({ productId: line.productId, quantity: line.quantity, unitPriceMinor: line.unitPriceMinor })), lowStockThreshold)
+      onLocalSale(stockUpdates as unknown as Product[])
+      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      await markSaleCompleted(localSale, true)
+    }
     try {
-      const response = await fetch('/api/sales', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
+      const queuedOperations = await listQueuedOperations()
+      const dependsOnPendingInventory = queuedOperations.some((operation) => {
+        if (operation.status === 'synchronized' || !/^(product\.|store\.receipt\.|transfer\.|pending-order\.|sale\.)/.test(operation.type)) return false
+        const affected = new Set<number>()
+        if (typeof operation.recordId === 'number' && operation.type.startsWith('product.')) affected.add(operation.recordId)
+        if (typeof operation.payload.productId === 'number') affected.add(operation.payload.productId)
+        for (const key of ['items', 'lines']) {
+          const rows = operation.payload[key]
+          if (Array.isArray(rows)) for (const row of rows) if (row && typeof row === 'object' && 'productId' in row && typeof row.productId === 'number') affected.add(row.productId)
+        }
+        return request!.items.some((line) => affected.has(line.productId))
       })
+      if (dependsOnPendingInventory) {
+        await saveOfflineCheckout()
+        return
+      }
+      if (!shouldAttemptServerRequest()) {
+        await saveOfflineCheckout()
+        return
+      }
+      let response: Response
+      try {
+        response = await fetch('/api/sales', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        })
+      } catch (networkError) {
+        if (!(networkError instanceof TypeError)) throw networkError
+        try {
+          const persistedSale = await fetchSale(request.idempotencyKey)
+          if (persistedSale) { await markSaleCompleted(persistedSale); return }
+        } catch (verificationError) { console.error('Could not reconcile checkout after a network error:', verificationError) }
+        await saveOfflineCheckout()
+        return
+      }
+      const queueableServerFailure = !response.ok && await shouldQueueAfterServerFailure(response)
       const result: unknown = await response.json().catch(() => null)
       if (response.ok && isSale(result)) {
         await markSaleCompleted(result)
@@ -490,12 +598,6 @@ export function PosCart({
         ? result.message
         : 'Checkout was rejected. Review the cart and try again.'
 
-      if (response.status === 503) {
-        setPending(null)
-        setMessage(serverMessage)
-        return
-      }
-
       if (response.status >= 500 || response.ok) {
         try {
           const persistedSale = await fetchSale(request.idempotencyKey)
@@ -505,6 +607,10 @@ export function PosCart({
           }
         } catch (verificationError) {
           console.error('Could not reconcile checkout response:', verificationError)
+        }
+        if (response.ok || queueableServerFailure) {
+          await saveOfflineCheckout()
+          return
         }
         setMessage('Checkout could not be confirmed. Retry checkout to safely verify or complete the same sale.')
         return
@@ -524,20 +630,104 @@ export function PosCart({
       }
     } catch (error) {
       console.error('Checkout request failed:', error)
-      try {
-        const persistedSale = await fetchSale(request.idempotencyKey)
-        if (persistedSale) {
-          await markSaleCompleted(persistedSale)
-          return
-        }
-      } catch (verificationError) {
-        console.error('Could not reconcile checkout after a network error:', verificationError)
-      }
-      setMessage('Connection interrupted. Checkout is unconfirmed; retry the same checkout before changing the cart.')
+      setMessage(error instanceof Error ? error.message : 'Checkout failed. Retry the same checkout before changing the cart.')
     } finally {
       setCheckoutLoading(false)
       checkoutLock.current = false
     }
+  }
+
+  const submitSupply = async () => {
+    if (supplyLock.current || checkoutLock.current || !cartRef.current.length) return
+    if (!customerName.trim()) {
+      setMessage('Fill in the customer name before supplying this order.')
+      customerNameInput.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      customerNameInput.current?.focus({ preventScroll: true })
+      return
+    }
+    if (!customerPhone.trim()) {
+      setMessage('Fill in the customer phone number before supplying this order.')
+      customerPhoneInput.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      customerPhoneInput.current?.focus({ preventScroll: true })
+      return
+    }
+    const quantitiesValid = !Object.values(quantityDrafts).some((value) => {
+      const quantity = Number(value)
+      return !value || !Number.isFinite(quantity) || quantity <= 0 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001
+    })
+    if (!quantitiesValid) { setMessage('Fix the invalid quantity before submitting this order.'); return }
+    const lines = cartRef.current.map(({ product, quantity }) => ({ product, quantity }))
+    for (const line of lines) {
+      const available = availableStock(line.product)
+      if (line.quantity > available) { setMessage(`Insufficient available stock for ${line.product.name}. Available: ${available}.`); return }
+      if (!Number.isFinite(line.product.price) || line.product.price < 0) { setMessage(`${line.product.name} has an invalid selling price.`); return }
+    }
+    const items = lines.map(({ product, quantity }) => ({ productId: product.id, quantity }))
+    const id = crypto.randomUUID()
+    const createdAt = new Date().toISOString()
+    const reference = `PO-${createdAt.slice(0, 10).replaceAll('-', '')}-${id.slice(0, 8).toUpperCase()}`
+    const orderItems = lines.map(({ product, quantity }) => {
+      const unitPriceMinor = Math.round(product.price * 100)
+      return { productId: product.id, name: product.name, sku: product.sku || product.model, barcode: product.barcode ?? '', quantity, unitPriceMinor, lineTotalMinor: Math.round(unitPriceMinor * quantity) }
+    })
+    const totalMinor = orderItems.reduce((sum, line) => sum + line.lineTotalMinor, 0)
+    if (!Number.isSafeInteger(totalMinor) || orderItems.some((line) => !Number.isSafeInteger(line.lineTotalMinor))) { setMessage('Order total is outside the supported amount.'); return }
+    const localOrder: PendingOrder = { id, reference, status: 'Pending', customerName: customerName.trim(), customerPhone: customerPhone.trim(), createdAt, items: orderItems, subtotalMinor: totalMinor, totalMinor, history: [{ at: createdAt, actor: 'You (this device)', event: 'Order submitted' }], localPending: true }
+    const payload = { operationId: id, customerName: localOrder.customerName, customerPhone: localOrder.customerPhone, items }
+    supplyLock.current = true; setSupplyLoading(true); setMessage('Saving supply order…')
+    const saveLocally = async () => {
+      const queued = await listQueuedOperations()
+      const dependencies = queued.filter((item) => {
+        if (item.status === 'synchronized' || !/^(product\.|store\.receipt\.|transfer\.|pending-order\.|sale\.)/.test(item.type)) return false
+        const affected = new Set<number>()
+        if (item.type.startsWith('product.') && typeof item.recordId === 'number') affected.add(item.recordId)
+        if (typeof item.payload.productId === 'number') affected.add(item.payload.productId)
+        for (const key of ['items', 'lines']) {
+          const rows = item.payload[key]
+          if (Array.isArray(rows)) for (const row of rows) if (row && typeof row === 'object' && 'productId' in row && typeof row.productId === 'number') affected.add(row.productId)
+        }
+        return orderItems.some((line) => affected.has(line.productId))
+      }).map((item) => item.id)
+      const stockUpdates = await savePendingOrderAndOperation(localOrder, { id, type: 'pending-order.create', label: `Supply ${reference}`, target: '/api/pending-orders', method: 'POST', payload, ...(dependencies.length ? { dependsOn: dependencies } : {}), recordCollection: 'pendingOrders', recordId: id }, 'reserve', lowStockThreshold)
+      onLocalSale(stockUpdates as Product[])
+      return localOrder
+    }
+    try {
+      let saved = localOrder
+      let queued = false
+      const earlierInventoryOps = await listQueuedOperations()
+      const hasEarlierInventory = earlierInventoryOps.some((item) => item.status !== 'synchronized' && /^(product\.|store\.receipt\.|transfer\.|pending-order\.|sale\.)/.test(item.type) && (() => {
+        const ids = new Set<number>()
+        if (item.type.startsWith('product.') && typeof item.recordId === 'number') ids.add(item.recordId)
+        if (typeof item.payload.productId === 'number') ids.add(item.payload.productId)
+        for (const key of ['items', 'lines']) { const rows = item.payload[key]; if (Array.isArray(rows)) for (const row of rows) if (row && typeof row === 'object' && 'productId' in row && typeof row.productId === 'number') ids.add(row.productId) }
+        return items.some((line) => ids.has(line.productId))
+      })())
+      if (!hasEarlierInventory && shouldAttemptServerRequest()) {
+        let response: Response | null = null
+        try { response = await fetch('/api/pending-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
+        catch (error) { if (!(error instanceof TypeError)) throw error }
+        const result = response ? await response.json().catch(() => null) : null
+        if (response?.ok && result?.order) {
+          saved = result.order as PendingOrder
+          try {
+            await writeLocalRecord('pendingOrders', id, saved, false)
+            if (Array.isArray(result.inventory)) {
+              for (const product of result.inventory) if (product && typeof product.id === 'number') await writeLocalRecord('products', product.id, product, false)
+              onLocalSale(result.inventory as Product[])
+            }
+          } catch (cacheError) { console.warn('Supply order was saved by the server, but its local cache could not be refreshed:', cacheError) }
+        } else if (response) throw new Error(typeof result?.message === 'string' ? result.message : `Supply order failed (${response.status})`)
+        else { saved = await saveLocally(); queued = true }
+      } else { saved = await saveLocally(); queued = true }
+      onOrderCreated(saved)
+      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      updateCart(() => []); setQuantityDrafts({}); setCashTendered(''); setCustomerName(''); setCustomerPhone('')
+      setMessage(queued ? `${reference} saved on this device and is waiting for Sync Now.` : `${reference} saved to Pending Orders.`)
+    } catch (cause) {
+      console.error('Could not save pending order:', cause)
+      setMessage(cause instanceof Error ? cause.message : 'Supply order could not be saved')
+    } finally { supplyLock.current = false; setSupplyLoading(false) }
   }
 
   const openReceipt = (sale: Sale) => {
@@ -596,15 +786,18 @@ export function PosCart({
     }
   }
 
+  useEffect(() => { onRegisterPrint(printSale) }, [onRegisterPrint, printSale])
+
   const effectiveTenderMinor = cashTendered.trim() === '' ? subtotalMinor : Math.round((Number(cashTendered) || 0) * 100)
   const roundedTenderMinor = effectiveTenderMinor
   const invalidQuantityDraft = Object.values(quantityDrafts).some((value) => {
     const quantity = Number(value)
     return !value || !Number.isFinite(quantity) || quantity <= 0 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001
   })
-  const unavailableCartLine = cart.some(({ product, quantity }) => product.stock < quantity || product.stock <= 0 ||
+  const unavailableCartLine = cart.some(({ product, quantity }) => availableStock(product) < quantity || availableStock(product) <= 0 ||
     (typeof product.status === 'string' && product.status.trim().toLowerCase() === 'discontinued'))
   const checkoutDisabled = checkoutLoading || (!pending && (productsLoading || !!productsError || invalidQuantityDraft || unavailableCartLine || !cart.length || roundedTenderMinor < subtotalMinor))
+  const supplyDisabled = supplyLoading || checkoutLoading || pending || productsLoading || !!productsError || invalidQuantityDraft || unavailableCartLine || cart.length === 0
 
   return <>
     <button type="button" className="pos-floating-button" onClick={onOpen} aria-label="Open point of sale cart">
@@ -650,7 +843,7 @@ export function PosCart({
             </div>
             {query && <div className="pos-search-results" role="listbox" aria-label="Matching inventory products">
               {filteredProducts.length ? filteredProducts.map((product) => <button type="button" role="option" aria-selected="false" key={product.id} onClick={() => { addProduct(product); setQuery('') }} disabled={cartLocked}>
-                <span><b>{product.name}</b><small>{product.sku || product.model} · {product.stock} in stock</small></span><strong>{money(product.price, currency)}</strong>
+                <span><b>{product.name}</b><small>{product.sku || product.model} · {availableStock(product)} available</small></span><strong>{money(product.price, currency)}</strong>
               </button>) : <p>No matching inventory item. Create it in Stocks before selling.</p>}
             </div>}
             {productsLoading && <p className="pos-message" role="status">Loading current inventory before enabling scans…</p>}
@@ -674,7 +867,7 @@ export function PosCart({
                   <td>{money(product.price, currency)}</td>
                   <td><div className="pos-quantity"><button type="button" aria-label={`Decrease ${product.name} quantity`} disabled={cartLocked} onClick={() => { setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[product.id]; return next }); quantity <= 1 ? updateCart((lines) => lines.filter((line) => line.product.id !== product.id)) : updateCart((lines) => lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity - 1 } : line)) }}><Minus /></button>
                     <input aria-label={`${product.name} quantity`} type="number" min="0.001" step="0.001" value={quantityDrafts[product.id] ?? quantity} disabled={cartLocked} onChange={(event) => changeQuantity(product.id, event.target.value)} onBlur={() => commitQuantity(product.id)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }} />
-                    <button type="button" aria-label={`Increase ${product.name} quantity`} disabled={cartLocked || quantity + 1 > product.stock} onClick={() => { setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[product.id]; return next }); updateCart((lines) => lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity + 1 } : line)) }}><Plus /></button></div></td>
+                    <button type="button" aria-label={`Increase ${product.name} quantity`} disabled={cartLocked || quantity + 1 > availableStock(product)} onClick={() => { setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[product.id]; return next }); updateCart((lines) => lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity + 1 } : line)) }}><Plus /></button></div></td>
                   <td><b>{moneyMinor(Math.round(Math.round(product.price * 100) * quantity), currency)}</b></td>
                   <td><button className="pos-icon-action pos-remove" type="button" disabled={cartLocked} onClick={() => updateCart((lines) => lines.filter((line) => line.product.id !== product.id))} aria-label={`Remove ${product.name}`}><Trash2 /></button></td>
                 </tr>)}</tbody>
@@ -693,9 +886,11 @@ export function PosCart({
             <div className="pos-cash-input"><span>{currency}</span><input id="pos-cash-tendered" type="number" min="0" step="0.01" value={cashTendered} disabled={cartLocked} onChange={(event) => setCashTendered(event.target.value)} placeholder="0.00" /></div>
             <div className="pos-change-row"><span>Change</span><b>{moneyMinor(Math.max(0, roundedTenderMinor - subtotalMinor), currency)}</b></div>
             <p>Receipts print automatically to the connected Bluetooth ESC/POS printer after checkout. You can reprint any saved receipt below.</p>
+            <div className="pos-supply-customer"><label>Customer name *<input ref={customerNameInput} value={customerName} onChange={(event) => setCustomerName(event.target.value)} maxLength={160} disabled={cartLocked || supplyLoading} placeholder="Customer or business" required /></label><label>Phone number *<input ref={customerPhoneInput} value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} maxLength={40} disabled={cartLocked || supplyLoading} placeholder="Phone number" required /></label></div>
             <button type="button" className="primary-button pos-checkout-button" onClick={submitCheckout} disabled={checkoutDisabled}>
               {checkoutLoading ? 'Processing…' : pending ? 'Retry payment & print' : 'Payment & print'}
             </button>
+            <button type="button" className="primary-button pos-checkout-button pos-supply-button" onClick={() => void submitSupply()} disabled={supplyDisabled}><Clock3 /> {supplyLoading ? 'Saving order…' : 'Supply'}</button>
             {pending && !checkoutLoading && <small className="pos-pending-note">The previous request could not be confirmed. Retry it before changing the cart.</small>}
           </section>
 
@@ -724,7 +919,7 @@ export function PosCart({
 
       {printRequest && <div className="receipt-print">
         <header><h1>MICROMEC</h1>{(printRequest.sale.businessName || workspace).replace(/[^a-z0-9]/gi, '').toLowerCase() !== 'micromec' && <p className="receipt-business-name">{printRequest.sale.businessName || workspace}</p>}<p className="receipt-document-title">SALES RECEIPT</p></header>
-        <div className="receipt-meta"><span>Receipt: {printRequest.sale.receiptNumber}</span><span>{formatSaleDate(printRequest.sale.createdAt)}</span></div>
+        <div className="receipt-meta"><span>Receipt: {printRequest.sale.receiptNumber}</span><span>{formatSaleDate(printRequest.sale.createdAt)}</span>{printRequest.sale.customerName && <span>Customer: {printRequest.sale.customerName}{printRequest.sale.customerPhone ? ` · ${printRequest.sale.customerPhone}` : ''}</span>}{printRequest.sale.pendingOrderReference && <span>Order: {printRequest.sale.pendingOrderReference}</span>}{printRequest.sale.localPending && <strong>Pending synchronization</strong>}</div>
         <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>
           {printRequest.sale.items.map((item) => <tr key={item.productId}><td>{item.name}<small>{item.sku}{item.barcode ? ` · ${item.barcode}` : ''}</small></td><td>{item.quantity}</td><td>{moneyMinor(item.unitPriceMinor, printRequest.sale.currency)}</td><td>{moneyMinor(item.lineTotalMinor, printRequest.sale.currency)}</td></tr>)}
         </tbody></table>
@@ -752,5 +947,5 @@ function SalesRangeControls({ preset, setPreset, customFrom, setCustomFrom, cust
 
 function SaleHistoryRow({ sale, currency, printing, onReprint, onOpen }: { sale: Sale; currency: string; printing: boolean; onReprint: () => void; onOpen: () => void }) {
   const itemSummary = sale.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')
-  return <article className="pos-history-row pos-sale-history-row"><div><b>{sale.receiptNumber}</b><small>{formatSaleDate(sale.createdAt)} · {sale.items.length} item line{sale.items.length === 1 ? '' : 's'}{itemSummary ? ` · ${itemSummary}` : ''}</small><strong>{moneyMinor(sale.totalMinor, sale.currency || currency)}</strong><em>{sale.payment.method} · {sale.payment.status}</em></div><button className="pos-icon-action" type="button" onClick={onReprint} disabled={printing} aria-label={`Reprint saved receipt ${sale.receiptNumber} on Bluetooth printer`}><Printer /></button><button className="pos-icon-action" type="button" onClick={onOpen} aria-label={`Open saved receipt ${sale.receiptNumber} for browser printing`}><FileDown /></button></article>
+  return <article className="pos-history-row pos-sale-history-row"><div><b>{sale.receiptNumber}</b><small>{sale.localPending ? 'Pending synchronization · ' : ''}{formatSaleDate(sale.createdAt)} · {sale.items.length} item line{sale.items.length === 1 ? '' : 's'}{itemSummary ? ` · ${itemSummary}` : ''}</small><strong>{moneyMinor(sale.totalMinor, sale.currency || currency)}</strong><em>{sale.payment.method} · {sale.payment.status}</em></div><button className="pos-icon-action" type="button" onClick={onReprint} disabled={printing} aria-label={`Reprint saved receipt ${sale.receiptNumber} on Bluetooth printer`}><Printer /></button><button className="pos-icon-action" type="button" onClick={onOpen} aria-label={`Open saved receipt ${sale.receiptNumber} for browser printing`}><FileDown /></button></article>
 }
