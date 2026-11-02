@@ -27,7 +27,7 @@ export function Stat({
   icon: ReactNode
   label: string
   value: string
-  change: string
+  change?: string
   positive?: boolean
 }) {
   return (
@@ -35,10 +35,10 @@ export function Stat({
       <div className="stat-icon">{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
-      <small className={positive ? 'positive' : ''}>
+      {change && <small className={positive ? 'positive' : ''}>
         {positive && <ArrowUpRight />}
         {change}
-      </small>
+      </small>}
     </div>
   )
 }

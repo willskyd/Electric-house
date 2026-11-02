@@ -70,7 +70,7 @@ const [debts, setDebts] = useState<Debt[]>([])
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem('micro-mec-state')
+      const raw = localStorage.getItem('electric-house-state')
       const saved = raw ? JSON.parse(raw) : null
       if (saved && typeof saved === 'object') {
         if (Array.isArray(saved.products)) setProducts(saved.products)
@@ -80,7 +80,7 @@ const [debts, setDebts] = useState<Debt[]>([])
         if (Array.isArray(saved.activities)) setActivities(saved.activities)
       }
     } catch {
-      localStorage.removeItem('micro-mec-state')
+      localStorage.removeItem('electric-house-state')
     } finally {
       hasLoadedState.current = true
       setHydrated(true)
@@ -89,7 +89,7 @@ const [debts, setDebts] = useState<Debt[]>([])
 
   useEffect(() => {
     if (!hydrated || !hasLoadedState.current) return
-    localStorage.setItem('micro-mec-state', 
+    localStorage.setItem('electric-house-state', 
       JSON.stringify({ products, debts, activities }))
   }, [hydrated, products, debts, activities])
 

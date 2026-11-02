@@ -194,7 +194,7 @@ export function SyncCenter({ currency }: { currency: string }) {
       const queued = await listQueuedOperations()
       const recovered = queued.map((operation) => operation.status === 'syncing' ? { ...operation, status: 'pending' as const, error: 'Previous synchronization was interrupted; safe to retry.' } : operation)
       for (let index = 0; index < recovered.length; index++) if (recovered[index] !== queued[index]) await updateQueuedOperation(recovered[index])
-      setOperations(recovered); setStorage('IndexedDB available')
+      setOperations(recovered); setStorage('Local storage available')
     } catch (error) { setStorage(error instanceof Error ? error.message : 'Local storage unavailable') }
   }, [])
   useEffect(() => {
@@ -203,8 +203,8 @@ export function SyncCenter({ currency }: { currency: string }) {
     const offlineHandler = () => setOnline(false)
     const changed = () => { void refresh() }
     setOnline(navigator.onLine)
-    window.addEventListener('online', onlineHandler); window.addEventListener('offline', offlineHandler); window.addEventListener('micro-mec-queue-changed', changed)
-    return () => { window.removeEventListener('online', onlineHandler); window.removeEventListener('offline', offlineHandler); window.removeEventListener('micro-mec-queue-changed', changed) }
+    window.addEventListener('online', onlineHandler); window.addEventListener('offline', offlineHandler); window.addEventListener('electric-house-queue-changed', changed)
+    return () => { window.removeEventListener('online', onlineHandler); window.removeEventListener('offline', offlineHandler); window.removeEventListener('electric-house-queue-changed', changed) }
   }, [refresh])
 
   const pending = operations.filter((operation) => operation.status === 'pending' || operation.status === 'failed')
@@ -308,7 +308,7 @@ export function SyncCenter({ currency }: { currency: string }) {
         }
       } catch (error) { console.warn('Server confirmed operations but inventory cache refresh failed:', error) }
     }
-    setProgress(''); setRunning(false); setResults(outcomes); await refresh(); window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    setProgress(''); setRunning(false); setResults(outcomes); await refresh(); window.dispatchEvent(new Event('electric-house-queue-changed'))
   }
 
   const retryAfterReview = async (operation: QueuedOperation) => {
@@ -322,7 +322,7 @@ export function SyncCenter({ currency }: { currency: string }) {
   return <div className="sync-page">
     <div className="sync-status-grid">
       <article className="sync-status-card"><div className="sync-status-icon">{online ? <Wifi /> : <WifiOff />}</div><span>Connection</span><b>{online ? 'Online' : 'Offline'}</b><small>Connectivity only; it never starts synchronization.</small></article>
-      <article className="sync-status-card"><div className="sync-status-icon"><HardDrive /></div><span>Local storage</span><b>{storage}</b><small>Operations persist on this device in IndexedDB.</small></article>
+      <article className="sync-status-card"><div className="sync-status-icon"><HardDrive /></div><span>Local storage</span><b>{storage}</b><small>Operations persist on this device in Local Storage.</small></article>
       <article className="sync-status-card"><div className="sync-status-icon"><Cloud /></div><span>Last successful sync</span><b>{lastSync ? new Date(lastSync).toLocaleString() : 'No successful sync yet'}</b><small>Pending records are not represented as synchronized.</small></article>
     </div>
     <div className="stat-grid sync-counts">{[['Pending', operations.filter((item) => item.status === 'pending').length], ['Successful', operations.filter((item) => item.status === 'synchronized').length], ['Failed', operations.filter((item) => item.status === 'failed').length], ['Conflicted', operations.filter((item) => item.status === 'conflicted').length]].map(([label, value]) => <div className="stat-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>

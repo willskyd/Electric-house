@@ -1,7 +1,9 @@
 import {
   ADMIN_SESSION_COOKIE,
   ADMIN_SESSION_MAX_AGE,
+  adminAuthConfigurationMessage,
   createAdminSession,
+  getAdminAuthConfiguration,
   safeStringEqual,
 } from "@/lib/admin-auth";
 import { NextResponse } from "next/server";
@@ -40,24 +42,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Enter your admin email and password" }, { status: 400 });
   }
 
-  const adminEmail = process.env.MICRO_MEC_ADMIN_EMAIL ?? (
-    process.env.NODE_ENV === "production" ? "" : "adminmicro.com"
-  );
-  const adminPassword = process.env.MICRO_MEC_ADMIN_PASSWORD ?? (
-    process.env.NODE_ENV === "production" ? "" : "Admin123"
-  );
-  if (!adminEmail || !adminPassword) {
-    return NextResponse.json({ message: "Admin sign-in is not configured on this server" }, { status: 503 });
+  const configuration = getAdminAuthConfiguration();
+  if (configuration.missingVariables.length) {
+    return NextResponse.json(
+      { message: adminAuthConfigurationMessage(configuration.missingVariables) },
+      { status: 503 },
+    );
   }
 
   try {
-    if (!safeStringEqual(identifier, adminEmail.trim().toLowerCase()) ||
-        !safeStringEqual(password, adminPassword)) {
+    if (!safeStringEqual(identifier, configuration.adminEmail.trim().toLowerCase()) ||
+        !safeStringEqual(password, configuration.adminPassword)) {
       return NextResponse.json({ message: "Email or password is incorrect" }, { status: 401 });
     }
 
-    const response = NextResponse.json({ authenticated: true, email: adminEmail.trim().toLowerCase(), role: "admin" });
-    response.cookies.set(ADMIN_SESSION_COOKIE, createAdminSession(adminEmail.trim().toLowerCase()), {
+    const email = configuration.adminEmail.trim().toLowerCase();
+    const response = NextResponse.json({ authenticated: true, email, role: "admin" });
+    response.cookies.set(ADMIN_SESSION_COOKIE, createAdminSession(email), {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",

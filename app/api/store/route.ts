@@ -45,7 +45,7 @@ export async function GET() {
   try {
     const client = await clientPromise();
     const records = await client.db(INVENTORY_DB).collection<Receipt>(COLLECTION)
-      .find({}, { projection: { requestHash: 0 } }).sort({ receivedAt: -1, createdAt: -1 }).limit(500).toArray();
+      .find({}, { projection: { requestHash: 0 } }).sort({ receivedAt: -1, createdAt: -1 }).toArray();
     return NextResponse.json(records.map(publicReceipt));
   } catch (error) {
     console.error("Failed to load Store receipts:", error);

@@ -7,13 +7,17 @@ export function OverviewSection({
   outstanding,
   salesMinor,
   currency,
+  productCount,
+  receiptCount,
   onGo,
 }: {
   outstanding: number
   salesMinor: number | null
   currency: string
+  productCount: number
+  receiptCount: number
   onGo: (s: Section) => void
-}) {
+})  {
   return (
     <>
       <div className="welcome-card ">
@@ -28,12 +32,35 @@ export function OverviewSection({
       </div>
 
       <div className="stat-grid overview-stat-grid">
-        <Stat icon={<Package />} label="Products tracked" value="1,248" change="12.5% this month" positive />
-        <Stat icon={<CreditCard />} label="Outstanding debt" value={money(outstanding)} change="Across 2 customers" />
-        <Stat icon={<ShoppingCart />} label="Today’s sales" value={salesMinor === null ? '—' : money(salesMinor / 100, currency)} change="Completed receipts today" positive />
-        <Stat icon={<ShoppingCart />} label="Stock received" value="318" change="This month" positive />
-        <Stat icon={<Users />} label="Team members" value="6" change="2 active now" />
-      </div>
+  <Stat
+    icon={<Package />}
+    label="Products tracked"
+    value={productCount.toLocaleString()}
+    change="Products in inventory"
+  />
+
+  <Stat
+    icon={<CreditCard />}
+    label="Outstanding debt"
+    value={money(outstanding, currency)}
+    change="Current outstanding balance"
+  />
+
+  <Stat
+    icon={<ShoppingCart />}
+    label="Today’s sales"
+    value={salesMinor === null ? '—' : money(salesMinor / 100, currency)}
+    change="Completed sales today"
+    positive
+  />
+
+  <Stat
+    icon={<ClipboardList />}
+    label="Stock receipts"
+    value={receiptCount.toLocaleString()}
+    change="Recorded stock deliveries"
+  />
+</div>
 
       <div className="quick-grid mb-20">
         <button onClick={() => onGo('Debt')}>

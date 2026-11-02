@@ -1,8 +1,20 @@
-import { ADMIN_SESSION_COOKIE, readAdminSession } from "@/lib/admin-auth";
+import {
+  ADMIN_SESSION_COOKIE,
+  adminAuthConfigurationMessage,
+  getAdminAuthConfiguration,
+  readAdminSession,
+} from "@/lib/admin-auth";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
   try {
+    const configuration = getAdminAuthConfiguration();
+    if (configuration.missingVariables.length) {
+      return NextResponse.json(
+        { message: adminAuthConfigurationMessage(configuration.missingVariables) },
+        { status: 503 },
+      );
+    }
     const session = readAdminSession(request.cookies.get(ADMIN_SESSION_COOKIE)?.value);
     return NextResponse.json(session
       ? { authenticated: true, email: session.email, role: session.role }

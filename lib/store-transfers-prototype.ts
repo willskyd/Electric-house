@@ -1,6 +1,6 @@
 import type { PrototypeBranch, PrototypeTransfer, StoreReceivingRecord } from '@/components/dashboard/types'
 
-export const STORE_TRANSFERS_STORAGE_KEY = 'micro-mec-store-transfers-prototype-v1'
+export const STORE_TRANSFERS_STORAGE_KEY = 'electric-house-store-transfers-prototype-v1'
 
 export const DEFAULT_PROTOTYPE_BRANCHES: PrototypeBranch[] = [
   { id: 'branch-1', name: 'Branch 1', createdAt: '' },

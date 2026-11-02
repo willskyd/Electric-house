@@ -40,7 +40,7 @@ export function Topbar({
           <div className="grid h-8 w-8 place-items-center rounded-xl bg-slate-900 text-white shadow-sm dark:bg-green-700">
             <Store className="h-4 w-4" />
           </div>
-          <strong className="hidden text-sm font-semibold text-slate-900 md:inline dark:text-slate-100">micro-mec</strong>
+          <strong className="hidden text-sm font-semibold text-slate-900 md:inline dark:text-slate-100">electric-house</strong>
         </div>
         </a>
 

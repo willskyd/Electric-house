@@ -20,7 +20,7 @@ export async function GET() {
   try {
     const client = await clientPromise();
     const records = await client.db(INVENTORY_DB).collection<Transfer>(COLLECTION)
-      .find({}, { projection: { requestHash: 0 } }).sort({ transferDate: -1, createdAt: -1 }).limit(500).toArray();
+      .find({}, { projection: { requestHash: 0 } }).sort({ transferDate: -1, createdAt: -1 }).toArray();
     return NextResponse.json(records.map(publicTransfer));
   } catch (error) {
     console.error("Failed to load transfers:", error);
@@ -49,13 +49,8 @@ export async function POST(request: Request) {
       }
       const branchCollection = db.collection("branches");
       const existingBranch = await branchCollection.findOne({ id: input.destinationBranchId }, { session });
-      let destinationName: string;
-      if (!existingBranch) {
-        const defaultName = input.destinationBranchId === "branch-1" ? "Branch 1" : input.destinationBranchId === "branch-2" ? "Branch 2" : null;
-        if (!defaultName) throw new InventoryError("The selected destination branch no longer exists", 409);
-        await branchCollection.insertOne({ id: input.destinationBranchId, name: defaultName, createdAt: new Date() }, { session });
-        destinationName = defaultName;
-      } else destinationName = String(existingBranch.name);
+      if (!existingBranch) throw new InventoryError("The selected destination branch no longer exists", 409);
+      const destinationName = String(existingBranch.name);
       const products = db.collection<InventoryProduct>("products");
       const lines = [];
       for (const line of input.lines) {

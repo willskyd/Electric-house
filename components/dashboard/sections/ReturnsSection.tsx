@@ -61,6 +61,7 @@ export function ReturnsSection({ currency }: { currency: string }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [queue, setQueue] = useState<QueuedOperation[]>([])
+  const [refundReference, setRefundReference] = useState('')
 
   const loadCustomerData = useCallback(async () => {
     const [localQueue, cachedReturns, cachedSales, cachedProducts] = await Promise.all([listQueuedOperations(), readLocalCollection<ReturnRecord>('returns'), readLocalCollection<Sale>('sales'), readLocalCollection<Product>('products')])
@@ -159,8 +160,8 @@ export function ReturnsSection({ currency }: { currency: string }) {
       fetch('/api/products').then(async (res) => { if (!res.ok) return; const rows = await res.json(); if (Array.isArray(rows)) { await cacheServerCollection('products', rows); if (!cancelled) setProducts(rows) } }).catch(() => undefined)
     }
     const handler = () => { void refresh() }
-    window.addEventListener('micro-mec-queue-changed', handler)
-    return () => { cancelled = true; window.removeEventListener('micro-mec-queue-changed', handler) }
+    window.addEventListener('electric-house-queue-changed', handler)
+    return () => { cancelled = true; window.removeEventListener('electric-house-queue-changed', handler) }
   }, [refresh])
 
   const customerVisible = useMemo(() => customerRecords
@@ -213,7 +214,7 @@ export function ReturnsSection({ currency }: { currency: string }) {
       setNotice('Customer return action saved on this device and is waiting for manual synchronization.')
     }
     if (!queuedLocally) setNotice('Customer return action confirmed by the server.')
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     setSelectedCustomer(null)
     await refresh()
   }
@@ -279,7 +280,7 @@ export function ReturnsSection({ currency }: { currency: string }) {
       setNotice('Customer return saved locally and is waiting for manual synchronization.')
     }
     setOpenCustomer(false)
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     await refresh()
   }
 
@@ -352,7 +353,7 @@ export function ReturnsSection({ currency }: { currency: string }) {
         setNotice('Company return saved locally and is waiting for manual synchronization.')
       }
       setOpenCompany(false)
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
       await refresh()
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Company return could not be saved')
@@ -426,7 +427,7 @@ export function ReturnsSection({ currency }: { currency: string }) {
       return
     }
     setOpenReplacement(false)
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     await refresh()
   }
 
@@ -622,8 +623,65 @@ export function ReturnsSection({ currency }: { currency: string }) {
           </ol>
         </div>
         <div className="return-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {selectedCustomer.status === 'pending-review' && <><button className="primary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'approve')}><ClipboardCheck size={16} /> Approve</button><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'reject')}>Reject</button></>}
-          {selectedCustomer.status === 'approved' && <><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'inspect', { condition: 'sellable' })}><PackageCheck size={16} /> Inspect sellable</button><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'restock', { confirmed: true })}>Confirm restock</button><button className="primary-button" onClick={() => { const refundReference = window.prompt('Enter the processed refund reference before confirming.'); if (refundReference?.trim()) void queueCustomerAction(selectedCustomer, 'confirm-refund', { confirmed: true, refundReference: refundReference.trim() }) }}>Confirm refund processed</button></>}
+{selectedCustomer.status === 'approved' && (
+  <>
+    <button
+      className="secondary-button"
+      onClick={() =>
+        void queueCustomerAction(selectedCustomer, 'inspect', {
+          condition: 'sellable',
+        })
+      }
+    >
+      <PackageCheck size={16} /> Inspect sellable
+    </button>
+
+    <button
+      className="secondary-button"
+      onClick={() =>
+        void queueCustomerAction(selectedCustomer, 'restock', {
+          confirmed: true,
+        })
+      }
+    >
+      Confirm restock
+    </button>
+
+    <div style={{ display: 'grid', gap: 8, width: '100%', maxWidth: 360 }}>
+      <label style={{ fontSize: 12, color: 'var(--muted)' }}>
+        Processed refund reference
+      </label>
+
+      <input
+        type="text"
+        value={refundReference}
+        onChange={(event) => setRefundReference(event.target.value)}
+        placeholder="Enter refund reference"
+        style={{
+          width: '100%',
+          padding: '10px 12px',
+          border: '1px solid var(--line)',
+          borderRadius: 8,
+          background: 'var(--panel)',
+          color: 'var(--fg)',
+        }}
+      />
+
+      <button
+        className="primary-button"
+        disabled={!refundReference.trim()}
+        onClick={() =>
+          void queueCustomerAction(selectedCustomer, 'confirm-refund', {
+            confirmed: true,
+            refundReference: refundReference.trim(),
+          })
+        }
+      >
+        Confirm refund processed
+      </button>
+    </div>
+  </>
+)}          {selectedCustomer.status === 'approved' && <><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'inspect', { condition: 'sellable' })}><PackageCheck size={16} /> Inspect sellable</button><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'restock', { confirmed: true })}>Confirm restock</button><button className="primary-button" onClick={() => { const refundReference = window.prompt('Enter the processed refund reference before confirming.'); if (refundReference?.trim()) void queueCustomerAction(selectedCustomer, 'confirm-refund', { confirmed: true, refundReference: refundReference.trim() }) }}>Confirm refund processed</button></>}
         </div>
       </div>
     </section></div>}

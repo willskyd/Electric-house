@@ -24,7 +24,7 @@ export async function persistRead(activity: Activity) {
     throw new Error(typeof result?.message === 'string' ? result.message : 'Failed to mark notification as read')
   }
   await saveLocalRecordAndOperation('activities', activity.id, updated, { id: operationId, type: 'activity.read', label: `Mark activity ${activity.id} as read`, target: `/api/activities/${activity.id}`, method: 'PATCH', payload, recordCollection: 'activities', recordId: activity.id })
-  window.dispatchEvent(new Event('micro-mec-queue-changed'))
+  window.dispatchEvent(new Event('electric-house-queue-changed'))
 }
 
 export function Inbox({

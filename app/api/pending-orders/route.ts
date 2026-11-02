@@ -27,7 +27,7 @@ export async function GET() {
   try {
     const client = await clientPromise()
     const db = client.db(INVENTORY_DB)
-    const rows = await db.collection<OrderDoc>(COLLECTION).find({}).sort({ createdAt: -1 }).limit(500).toArray()
+    const rows = await db.collection<OrderDoc>(COLLECTION).find({}).sort({ createdAt: -1 }).toArray()
     const acceptedIds = rows.filter((row) => row.status === 'Accepted').map((row) => String((row as any).saleId ?? row.id))
     const sales = acceptedIds.length ? await db.collection('sales').find({ id: { $in: acceptedIds } }).toArray() : []
     const saleById = new Map(sales.map((sale) => [String(sale.id), sale]))
@@ -158,7 +158,7 @@ export async function PATCH(request: Request) {
           }
           const settings = await db.collection('settings').findOne({ key: 'workspace' }, { session })
           const currency = ['NGN', 'USD', 'EUR', 'GBP'].includes(String(settings?.currency)) ? String(settings?.currency) : 'NGN'
-          const businessName = typeof settings?.workspace === 'string' ? settings.workspace : 'Micro-mec'
+          const businessName = typeof settings?.workspace === 'string' ? settings.workspace : 'Electric House'
           const items = order.items.map((line) => ({ ...line, lineTotalMinor: Math.round(line.unitPriceMinor * line.quantity) }))
           const totalMinor = items.reduce((sum, line) => sum + line.lineTotalMinor, 0)
           if (!Number.isSafeInteger(totalMinor)) throw new InventoryError('Order total exceeds the supported amount', 409)

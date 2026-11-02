@@ -27,7 +27,7 @@ export type CachedRecord = {
   updatedAt: string
 }
 
-const DB_NAME = 'micro-mec-offline'
+const DB_NAME = 'electric-house-offline'
 const STORE = 'operations'
 const RECORDS = 'records'
 
@@ -86,7 +86,7 @@ function openDatabase(): Promise<IDBDatabase> {
     request.onblocked = () => {
       if (!blockedTimer) blockedTimer = setTimeout(() => {
         blockedTimedOut = true
-        reject(new Error('Offline database upgrade is blocked by another open Micro-Mec tab. Close older tabs, then retry.'))
+        reject(new Error('Offline database upgrade is blocked by another open Electric house tab. Close older tabs, then retry.'))
       }, 10_000)
     }
     request.onsuccess = () => {
@@ -133,6 +133,73 @@ export async function cacheServerCollection<T extends Record<string, unknown>>(c
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(transaction.error ?? new Error(`Could not cache ${collection}`))
     transaction.onabort = () => reject(transaction.error ?? new Error(`Could not cache ${collection}`))
+  })
+}
+
+/**
+ * Reconcile a complete server collection response with the local cache.
+ * Only clean records absent from the authoritative server response are removed.
+ * Dirty records and tombstones are always preserved.
+ */
+export async function reconcileServerCollection<T extends Record<string, unknown>>(
+  collection: string,
+  values: T[],
+  idField = 'id',
+): Promise<void> {
+  const db = await openDatabase()
+
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(RECORDS, 'readwrite')
+    const store = transaction.objectStore(RECORDS)
+    const request = store.index('collection').getAll(collection)
+
+    request.onsuccess = () => {
+      const existing = request.result as CachedRecord[]
+      const serverIds = new Set(
+        values
+          .map((value) => value[idField])
+          .filter((id): id is string | number =>
+            typeof id === 'string' || typeof id === 'number',
+          )
+          .map(String),
+      )
+
+      for (const record of existing) {
+        if (record.dirty || record.tombstone) continue
+
+        if (!serverIds.has(String(record.id))) {
+          store.delete(record.key)
+        }
+      }
+
+      for (const value of values) {
+        const id = value[idField]
+
+        if (typeof id !== 'string' && typeof id !== 'number') continue
+
+        const previous = existing.find(
+          (record) => record.key === `${collection}:${String(id)}`,
+        )
+
+        if (previous?.dirty || previous?.tombstone) continue
+
+        store.put({
+          key: `${collection}:${String(id)}`,
+          collection,
+          id,
+          value,
+          dirty: false,
+          updatedAt: new Date().toISOString(),
+        } satisfies CachedRecord)
+      }
+    }
+
+    request.onerror = () => transaction.abort()
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error(`Could not reconcile ${collection}`))
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error(`Could not reconcile ${collection}`))
   })
 }
 

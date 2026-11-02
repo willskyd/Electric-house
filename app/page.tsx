@@ -49,10 +49,9 @@ import { ReturnsSection } from '../components/dashboard/sections/ReturnsSection'
 import { PendingOrdersSection } from '../components/dashboard/sections/PendingOrdersSection'
 import { SyncCenter } from '../components/dashboard/sections/SyncCenter'
 import { SearchableProductSelect } from '../components/dashboard/SearchableProductSelect'
-import { initialActivities, initialDebts, initialProducts } from '../components/dashboard/data'
 import type { Activity, Debt, PendingOrder, Product, Payment, Receipt, Sale, Section } from '../components/dashboard/types'
 import { money, now, Stat, daysAgo } from '../components/dashboard/utils'
-import { cacheServerCollection, deleteLocalRecord, listQueuedOperations, readLocalCollection, saveLocalDeletionAndOperation, saveLocalRecordAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '../lib/offline-queue'
+import { cacheServerCollection, reconcileServerCollection, deleteLocalRecord, listQueuedOperations, readLocalCollection, saveLocalDeletionAndOperation, saveLocalRecordAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '../lib/offline-queue'
 
 function isProductList(value: unknown): value is Product[] {
   return Array.isArray(value) && value.every((item: unknown) =>
@@ -67,6 +66,83 @@ function isProductList(value: unknown): value is Product[] {
     'price' in item && typeof item.price === 'number' &&
     'status' in item && typeof item.status === 'string',
   )
+}
+
+const knownDemoProducts: Product[] = [
+  { id: 1, name: '20,000mAh Power Bank', model: 'MEC-PWB-20000', sku: 'PWB-20000', category: 'Power banks', stock: 24, price: 28500, status: 'In stock' },
+  { id: 2, name: '20W USB-C Charger', model: 'MEC-CHG-20W', sku: 'CHG-20W', category: 'Chargers', stock: 18, price: 12500, status: 'In stock' },
+  { id: 3, name: 'USB-C Fast Charge Cable', model: 'MEC-CBL-USBC', sku: 'CBL-USBC', category: 'Cables', stock: 7, price: 3500, status: 'Low stock' },
+  { id: 4, name: 'Wireless Earbuds', model: 'MEC-EAR-BT01', sku: 'EAR-BT01', category: 'Earphones', stock: 0, price: 18500, status: 'Out of stock' },
+  { id: 5, name: 'Tempered Glass Screen Guard', model: 'MEC-SCR-TG01', sku: 'SCR-TG01', category: 'Screen guards', stock: 32, price: 2500, status: 'In stock' },
+]
+
+const knownDemoDebts = [
+  { id: 1, customer: 'Harbor Mobile', invoice: 'INV-1048', createdAt: ['Jun 12, 2026, 9:40 AM', 'Oct 25, 2026, 9:40 AM'], items: [{ name: '20,000mAh Power Bank', price: 28500 }, { name: 'USB-C Fast Charge Cable', price: 3500 }] },
+  { id: 2, customer: 'Maya Telecom', invoice: 'INV-1045', createdAt: ['Jun 11, 2026, 3:12 PM', 'Oct 27, 2026, 3:12 PM'], items: [{ name: '20W USB-C Charger', price: 12500 }, { name: 'Tempered Glass Screen Guard', price: 2500 }] },
+  { id: 3, customer: 'Westside Phones', invoice: 'INV-1039', createdAt: ['Jun 09, 2026, 11:05 AM', 'Oct 20, 2026, 11:05 AM'], items: [{ name: 'Wireless Earbuds', price: 18500 }] },
+]
+
+const knownDemoActivities = [
+  { id: 1, text: 'Payment received from Westside Phones', detail: 'A customer payment was received and matched to invoice INV-1039.', time: 'Oct 31, 2026, 11:05 AM' },
+  { id: 2, text: 'New stock receipt completed', detail: 'A stock receipt was recorded for a delivery of USB-C chargers.', time: 'Oct 30, 2026, 4:20 PM' },
+  { id: 3, text: 'Debt added for Harbor Mobile', detail: 'A new customer debt record was created for phone accessories.', time: 'Oct 29, 2026, 9:40 AM' },
+]
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isIdentifiedRecordList(value: unknown): value is Array<Record<string, unknown>> {
+  return Array.isArray(value) && value.every((row) =>
+    isRecord(row) && (typeof row.id === 'string' || typeof row.id === 'number'),
+  )
+}
+
+function filterKnownDemoRows<T>(collection: string, rows: T[]): T[] {
+  return rows.filter((row) => {
+    if (!isRecord(row)) return true
+    if (collection === 'products') {
+      return !knownDemoProducts.some((fixture) =>
+        Object.entries(fixture).every(([key, value]) => row[key] === value) &&
+        row.barcode === undefined &&
+        (row.reservedStock === undefined || row.reservedStock === 0),
+      )
+    }
+    if (collection === 'debts') {
+      const items = row.items
+      if (!Array.isArray(items)) return true
+      return !knownDemoDebts.some((fixture) =>
+        String(row.id) === String(fixture.id) &&
+        row.customer === fixture.customer &&
+        row.invoice === fixture.invoice &&
+        fixture.createdAt.includes(String(row.createdAt)) &&
+        items.length === fixture.items.length &&
+        fixture.items.every((item, index) => {
+          const actual: unknown = items[index]
+          return isRecord(actual) && actual.name === item.name && actual.price === item.price
+        }),
+      )
+    }
+    if (collection === 'receipts') {
+      return !(
+        row.id === 1 &&
+        row.name === '20W USB-C Charger' &&
+        row.model === 'MEC-CHG-20W' &&
+        row.quantity === 18 &&
+        row.invoice === 'REC-1001' &&
+        row.date === 'Oct 30, 2026, 4:20 PM'
+      )
+    }
+    if (collection === 'activities') {
+      return !knownDemoActivities.some((fixture) =>
+        row.id === fixture.id &&
+        row.text === fixture.text &&
+        row.detail === fixture.detail &&
+        row.time === fixture.time,
+      )
+    }
+    return true
+  })
 }
 
 export default function Page() {
@@ -88,7 +164,7 @@ export default function Page() {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [dark, setDark] = useState(false)
-  const [settings, setSettings] = useState({ workspace: 'Micro-MEC', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
+  const [settings, setSettings] = useState({ workspace: 'Electric house', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
   const settingsRevision = useRef(0)
   const [sidebar, setSidebar] = useState(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
   const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
@@ -122,37 +198,34 @@ export default function Page() {
   }, [])
 
   const refreshProducts = async () => {
-    const response = await fetch('/api/products', { cache: 'no-store' })
-    const result: unknown = await response.json().catch(() => null)
-    if (!response.ok || !isProductList(result)) throw new Error('Inventory could not be refreshed. Reload before another stock operation.')
-    await cacheServerCollection('products', result as Array<Product & Record<string, unknown>>)
-    setProducts(result)
-    setProductsError('')
-    return result
+  const response = await fetch('/api/products', { cache: 'no-store' })
+  const result: unknown = await response.json().catch(() => null)
+
+  if (!response.ok || !isProductList(result)) {
+    throw new Error('Inventory could not be refreshed. Reload before another stock operation.')
   }
 
+  const records = filterKnownDemoRows('products', result)
+  await reconcileServerCollection(
+    'products',
+    records as Array<Product & Record<string, unknown>>,
+  )
+
+  const merged = filterKnownDemoRows('products', await readLocalCollection<Product>('products'))
+
+  setProducts(merged)
+  setProductsError('')
+
+  return merged
+}
+
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('micro-mec-state')
-      const saved = raw ? JSON.parse(raw) : null
-      if (saved && typeof saved === 'object') {
-        if (Array.isArray(saved.products)) setProducts(saved.products)
-        if (Array.isArray(saved.debts)) setDebts(saved.debts)
-        // if (Array.isArray(saved.receipts)) setReceipts(saved.receipts)
-        // if (saved.settings && typeof saved.settings === 'object') setSettings((current) => ({ ...current, ...saved.settings }))
-        if (Array.isArray(saved.activities)) setActivities(saved.activities)
-      }
-    } catch {
-      localStorage.removeItem('micro-mec-state')
-    } finally {
-      hasLoadedState.current = true
-      setHydrated(true)
-    }
+    setHydrated(true)
   }, [])
 
   useEffect(() => {
     if (!hydrated || !hasLoadedState.current) return
-    localStorage.setItem('micro-mec-state', 
+    localStorage.setItem('electric-house-state', 
       JSON.stringify({ products, debts, activities }))
   }, [hydrated, products, debts, activities])
 
@@ -171,18 +244,24 @@ export default function Page() {
         readLocalCollection<PendingOrder>('pendingOrders'),
       ])
       let saved: Record<string, unknown> | null = null
-      try { saved = JSON.parse(localStorage.getItem('micro-mec-state') || 'null') as Record<string, unknown> | null } catch { saved = null }
-      const legacyProducts = cachedProducts.length ? cachedProducts : Array.isArray(saved?.products) ? saved.products as Product[] : []
-      const legacyDebts = cachedDebts.length ? cachedDebts : Array.isArray(saved?.debts) ? saved.debts as Debt[] : []
-      const legacyActivities = cachedActivities.length ? cachedActivities : Array.isArray(saved?.activities) ? saved.activities as Activity[] : []
+      try { saved = JSON.parse(localStorage.getItem('electric-house-state') || 'null') as Record<string, unknown> | null } catch { saved = null }
+      const cleanCachedProducts = filterKnownDemoRows('products', cachedProducts)
+      const cleanCachedDebts = filterKnownDemoRows('debts', cachedDebts)
+      const cleanCachedActivities = filterKnownDemoRows('activities', cachedActivities)
+      const legacyProducts = cleanCachedProducts.length ? cleanCachedProducts : filterKnownDemoRows('products', Array.isArray(saved?.products) ? saved.products as Product[] : [])
+      const legacyDebts = cleanCachedDebts.length ? cleanCachedDebts : filterKnownDemoRows('debts', Array.isArray(saved?.debts) ? saved.debts as Debt[] : [])
+      const legacyActivities = cleanCachedActivities.length ? cleanCachedActivities : filterKnownDemoRows('activities', Array.isArray(saved?.activities) ? saved.activities as Activity[] : [])
+      const visibleReceipts = filterKnownDemoRows('receipts', cachedReceipts)
       if (!cachedProducts.length && legacyProducts.length) await cacheServerCollection('products', legacyProducts as Array<Product & Record<string, unknown>>)
       if (!cachedDebts.length && legacyDebts.length) await cacheServerCollection('debts', legacyDebts as Array<Debt & Record<string, unknown>>)
       if (!cachedActivities.length && legacyActivities.length) await cacheServerCollection('activities', legacyActivities as Array<Activity & Record<string, unknown>>)
       if (cancelled) return
-      setProducts(legacyProducts); setDebts(legacyDebts); setReceipts(cachedReceipts); setActivities(legacyActivities)
-      setPendingOrders(cachedPendingOrders)
+      if (!navigator.onLine) {
+        setProducts(legacyProducts); setDebts(legacyDebts); setReceipts(visibleReceipts); setActivities(legacyActivities)
+        setPendingOrders(cachedPendingOrders)
+      }
       if (cachedSettings[0]?.settings) { settingsRevision.current = cachedSettings[0].revision ?? 0; setSettings((current) => ({ ...current, ...cachedSettings[0].settings })) }
-      if (legacyActivities.length) setSelectedInbox(legacyActivities[0])
+      if (!navigator.onLine && legacyActivities.length) setSelectedInbox(legacyActivities[0])
     } catch (error) {
       console.error('Could not hydrate local dashboard data:', error)
       if (!cancelled) setDashboardErrors((items) => [...items, 'Local cache is unavailable; changes cannot be stored offline in this browser.'])
@@ -200,12 +279,20 @@ export default function Page() {
         const response = await fetch(path, { cache: 'no-store' })
         if (!response.ok) throw new Error(`${path} returned HTTP ${response.status}`)
         const body: unknown = await response.json()
-        if (!validate(body)) throw new Error(`${path} returned invalid data`)
-        await cacheServerCollection(collection, body)
-        const merged = await readLocalCollection<T>(collection)
+        if (!validate(body) || !isIdentifiedRecordList(body)) throw new Error(`${path} returned invalid data`)
+        const records = filterKnownDemoRows(collection, body)
+        await reconcileServerCollection(collection, records)
+
+        const merged = filterKnownDemoRows(collection, await readLocalCollection<T>(collection))
         if (!cancelled) apply(merged)
       } catch (error) {
         console.warn(`Dashboard refresh failed for ${collection}; keeping the local cache`, error)
+        try {
+          const cached = filterKnownDemoRows(collection, await readLocalCollection<T>(collection))
+          if (!cancelled) apply(cached)
+        } catch (cacheError) {
+          console.error(`Could not read the local ${collection} cache:`, cacheError)
+        }
         errors.push(collection)
       }
     }
@@ -241,15 +328,15 @@ export default function Page() {
   const onLocalChange = () => {
     void Promise.all([readLocalCollection<Product>('products'), readLocalCollection<Debt>('debts'), readLocalCollection<Receipt>('receipts'), readLocalCollection<Activity>('activities'), readLocalCollection<{ id: string; settings: typeof settings; revision?: number }>('settings'), readLocalCollection<PendingOrder>('pendingOrders')]).then(([localProducts, localDebts, localReceipts, localActivities, localSettings, localPendingOrders]) => {
       if (cancelled) return
-      setProducts(localProducts); setDebts(localDebts); setReceipts(localReceipts); setActivities(localActivities)
+    setProducts(filterKnownDemoRows('products', localProducts)); setDebts(filterKnownDemoRows('debts', localDebts)); setReceipts(filterKnownDemoRows('receipts', localReceipts)); setActivities(filterKnownDemoRows('activities', localActivities))
       setPendingOrders(localPendingOrders)
       if (localSettings[0]?.settings) { settingsRevision.current = localSettings[0].revision ?? settingsRevision.current; setSettings((current) => ({ ...current, ...localSettings[0].settings })) }
     }).catch((error) => console.error('Could not refresh local dashboard records:', error))
   }
   window.addEventListener('online', onOnline); window.addEventListener('offline', onOffline)
-  window.addEventListener('micro-mec-queue-changed', onLocalChange)
+  window.addEventListener('electric-house-queue-changed', onLocalChange)
   void hydrateLocalData().then(() => { if (!cancelled) return loadOtherDashboardData() })
-  return () => { cancelled = true; window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); window.removeEventListener('micro-mec-queue-changed', onLocalChange) }
+  return () => { cancelled = true; window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); window.removeEventListener('electric-house-queue-changed', onLocalChange) }
 }, [authChecking, signedIn])
 
 useEffect(() => {
@@ -339,7 +426,7 @@ const notify = async (
         payload: { operationId, ...activity }, recordCollection: 'activities', recordId: activity.id,
       })
       setActivities((items) => [activity, ...items.filter((item) => item.id !== activity.id)])
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
     }
     let response: Response | null = null
     if (shouldAttemptServerRequest()) {
@@ -491,7 +578,7 @@ const notify = async (
       ...(earlier ? { dependsOn: earlier.id } : {}), recordCollection: 'products', recordId: current.id,
     })
     setProducts((items) => items.map((product) => product.id === current.id ? updated : product))
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return { product: updated, queued: true }
   }
   if (earlier || !shouldAttemptServerRequest()) return saveLocally()
@@ -516,10 +603,11 @@ const refreshPosProducts = async (): Promise<Product[]> => {
   if (!response.ok) throw new Error('Could not refresh inventory after checkout validation')
   const result: unknown = await response.json()
   if (!isProductList(result)) throw new Error('Inventory returned invalid product data')
-  await cacheServerCollection('products', result as Array<Product & Record<string, unknown>>)
-  setProducts(result)
+  const records = filterKnownDemoRows('products', result)
+  await cacheServerCollection('products', records as Array<Product & Record<string, unknown>>)
+  setProducts(records)
   setProductsError('')
-  return result
+  return records
 }
 
 const deleteProductOnServer = async (id: number, operationId: string) => {
@@ -575,7 +663,7 @@ const formatCurrency = (amount: number) => {
   const newProduct: Product = {
     id,
     name,
-    model: model || `MEC-${String(Date.now()).slice(-5).toUpperCase()}`,
+    model: model || `EH-${String(Date.now()).slice(-5).toUpperCase()}`,
     sku,
     barcode,
     category,
@@ -596,7 +684,7 @@ const formatCurrency = (amount: number) => {
       recordCollection: 'products', recordId: id,
     })
     setProducts((current) => [newProduct, ...current.filter((item) => item.id !== id)])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return newProduct
   }
 
@@ -706,7 +794,7 @@ const formatCurrency = (amount: number) => {
       }
       setDebts((current) => [savedDebt, ...current.filter((debt) => debt.id !== savedDebt.id)])
       setModal(null)
-      if (queued) window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      if (queued) window.dispatchEvent(new Event('electric-house-queue-changed'))
       notify(
         queued ? `Debt saved locally for ${savedDebt.customer}` : `Debt saved for ${savedDebt.customer}`,
         `Invoice: ${savedDebt.invoice}. ${savedDebt.receiptNumber ? `Receipt RN: ${savedDebt.receiptNumber}. ` : ''}Total: ${money(savedDebt.amount, settings.currency)}.${queued ? ' Pending manual synchronization.' : ''}`,
@@ -747,7 +835,7 @@ const formatCurrency = (amount: number) => {
       ...(prior ? { dependsOn: prior.id } : {}), recordCollection: 'receipts', recordId: id,
     })
     setReceipts((current) => [localReceipt, ...current.filter((item) => item.id !== id)])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return localReceipt
   }
 
@@ -844,7 +932,7 @@ const formatCurrency = (amount: number) => {
           {dashboardErrors.map((message) => <div className="dashboard-data-warning" role="status" key={message}>{message}</div>)}
           {section !== 'POS' && <div className="page-heading">
             <div>
-              <div className="eyebrow">{section === 'Overview' ? 'Micro-MEC workspace' : 'Workspace'}</div>
+              <div className="eyebrow">{section === 'Overview' ? 'Electric house workspace' : 'Workspace'}</div>
               <h1>{sectionHeading}</h1>
               <p>
                 {section === 'Overview' ? 'A clear view of your market, stock, and customer accounts.' : section === 'Debt' ? 'Stay on top of outstanding customer balances.' : section === 'Paid' ? 'A record of completed customer payments.' : section === 'Pending' ? 'Review supplied orders and confirm payment or release reservations.' : section === 'Returns' ? 'Review customer returns, inspection decisions, and refunds.' : section === 'Sync Center' ? 'Review local operations and synchronize only after confirmation.' : section === 'Settings' ? 'Manage workspace preferences and access.' : section === 'Team members' ? 'People with access to this workspace.' : section === 'New Stocks' ? 'Review incoming inventory and recent receipts.' : section === 'Store' ? 'Receive, check, and record deliveries at your main store.' : section === 'Transfers' ? 'Record goods dispatched from the main store to a branch.' : 'Keep an eye on your products and stock levels.'}
@@ -858,8 +946,10 @@ const formatCurrency = (amount: number) => {
             )}
           </div>}
 
-          {section === 'Overview' && <OverviewSection outstanding={outstanding} salesMinor={overviewSalesMinor} currency={settings.currency} onGo={go} />}
-
+             {section === 'Overview' && (
+              <OverviewSection outstanding={outstanding} salesMinor={overviewSalesMinor} currency={settings.currency} productCount={products.length} receiptCount={receipts.length} onGo={go} />
+              )}
+              
           {section === 'Pending' && <PendingOrdersSection
             orders={pendingOrders}
             setOrders={setPendingOrders}
@@ -878,7 +968,7 @@ const formatCurrency = (amount: number) => {
           {section === 'Stocks' && (
             <>
               <div className="stat-grid">
-                <Stat icon={<Package />} label="Total products" value={products.length.toLocaleString()} change="+12.5%" positive />
+                <Stat icon={<Package />} label="Total products" value={products.length.toLocaleString()} />
              <Stat
                icon={<TrendingUpIcon />}
                label="Total stock value"
@@ -886,11 +976,9 @@ const formatCurrency = (amount: number) => {
                products.reduce((a, p) => a + p.stock * p.price, 0),
                settings.currency
                 )}
-               change="+8.2%"
-               positive
                 />               
           <Stat icon={<CircleAlert />} label="Low stock items" value={products.filter((p) => p.status === 'Low stock').length.toString()} change="Needs attention" />
-                <Stat icon={<WalletCards />} label="Out of stock" value={products.filter((p) => p.stock === 0).length.toString()} change="-2 this week" positive />
+                <Stat icon={<WalletCards />} label="Out of stock" value={products.filter((p) => p.stock === 0).length.toString()} />
               </div>
               <section className="panel mb-20 ">
                 <Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All', 'In stock', 'Low stock', 'Out of stock']} />
@@ -1009,7 +1097,7 @@ const formatCurrency = (amount: number) => {
           id: operationId, type: 'receipt.update', label: `Update stock receipt ${current.invoice}`, target: `/api/receipts/${id}`, method: 'PATCH', payload,
           ...(prior ? { dependsOn: prior.id } : {}), recordCollection: 'receipts', recordId: id,
         })
-        window.dispatchEvent(new Event('micro-mec-queue-changed'))
+        window.dispatchEvent(new Event('electric-house-queue-changed'))
         return updatedLocal
       }
       let updatedReceipt: Receipt
@@ -1090,14 +1178,22 @@ const formatCurrency = (amount: number) => {
                 <div>
                   <span>{section === 'Paid' ? 'Total paid history' : 'Total Outstanding Debt'}</span>
                   <strong>
-                  {section === 'Paid'
+                    {section === 'Paid'
+                      ? money(
+                     debts
+                     .filter((d) => d.paidAt)
+                     .reduce((a, d) => a + d.amount, 0),
+                     settings.currency
+                     )
+                    : money(outstanding, settings.currency)}
+                  {/* {section === 'Paid'
                     ? money(
                     debts
                      .filter((d) => d.paidAt)
                      .reduce((a, d) => a + d.amount, 0) + pendingOrders.filter((order) => order.status === 'Accepted').reduce((sum, order) => sum + order.totalMinor / 100, 0),
                   settings.currency
                      )
-                  : money(outstanding, settings.currency)}
+                  : money(outstanding, settings.currency)} */}
                   </strong>               
              </div>
                 <CircleDollarSign />
@@ -1106,7 +1202,13 @@ const formatCurrency = (amount: number) => {
                 <Toolbar query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} options={['All']} />
                 <DebtTable debts={visibleDebts} paid={section === 'Paid'} onOpen={(d) => { setSelectedDebt(d); setModal('detail')  }} currency={settings.currency} />
               </section>
-              {section === 'Paid' && <section className="panel paid-orders-panel"><div className="panel-heading"><div><h2>Accepted supply orders</h2><p>Completed sales created from Pending Orders.</p></div></div>{pendingOrders.filter((order) => order.status === 'Accepted').length ? <div className="table-wrap"><table><thead><tr><th>Receipt</th><th>Customer</th><th>Items</th><th>Total paid</th><th>Date</th><th /></tr></thead><tbody>{pendingOrders.filter((order) => order.status === 'Accepted').map((order) => <tr key={order.id}><td><b>{order.sale?.receiptNumber ?? order.reference}</b></td><td>{order.customerName || 'Walk-in customer'}<small>{order.customerPhone}</small></td><td>{order.items.length}</td><td>{money(order.totalMinor / 100, settings.currency)}</td><td>{new Date(order.sale?.createdAt ?? order.createdAt).toLocaleString()}</td><td>{order.sale && <button className="secondary-button" onClick={() => { if (pendingPrinter.current) void pendingPrinter.current(order.sale!); else setToast('Receipt printer is not ready yet') }}><Printer /> Print receipt</button>}</td></tr>)}</tbody></table></div> : <div className="empty"><CircleDollarSign /><b>No accepted supply orders</b><span>Accepted orders will appear here as paid sales.</span></div>}</section>}
+              {/* {section === 'Paid' && <section className="panel paid-orders-panel"><div className="panel-heading"><div><h2>Accepted supply orders</h2><p>Completed sales created from Pending Orders.</p></div></div>
+              {pendingOrders.filter((order) => order.status === 'Accepted').length ? <div className="table-wrap"><table><thead><tr><th>Receipt</th><th>Customer</th><th>Items</th><th>Total paid</th><th>Date</th><th /></tr></thead><tbody>
+              {pendingOrders.filter((order) => order.status === 'Accepted').map((order) => <tr key={order.id}><td><b>{order.sale?.receiptNumber ?? order.reference}</b></td><td>
+              {order.customerName || 'Walk-in customer'}<small>{order.customerPhone}</small></td><td>{order.items.length}</td><td>{money(order.totalMinor / 100, settings.currency)}</td><td>
+              {new Date(order.sale?.createdAt ?? order.createdAt).toLocaleString()}</td><td>{order.sale && <button className="secondary-button" onClick={() => { if (pendingPrinter.current) void pendingPrinter.current(order.sale!); else setToast('Receipt printer is not ready yet') }}><Printer /> Print receipt</button>}
+              </td></tr>)}</tbody></table></div> : <div className="empty"><CircleDollarSign /><b>No accepted supply orders</b><span>Accepted orders will appear here as paid sales.</span></div>}</section>}
+               */}
             </>
           )}
 
@@ -1135,7 +1237,7 @@ const formatCurrency = (amount: number) => {
           payload, ...(queuedSettings.length ? { dependsOn: queuedSettings.map((operation) => operation.id) } : {}), recordCollection: 'settings', recordId: 'workspace',
         })
         settingsRevision.current = expectedRevision + 1
-        window.dispatchEvent(new Event('micro-mec-queue-changed'))
+        window.dispatchEvent(new Event('electric-house-queue-changed'))
         setToast('Settings saved on this device · waiting for Sync Now')
       }
       try {
@@ -1161,7 +1263,7 @@ const formatCurrency = (amount: number) => {
   />
 )}          
       
-      {section === 'Team members' && <TeamPage />}
+      {/* {section === 'Team members' && <TeamPage />} */}
         </div>
 
         <MobileNav section={section} go={go} />
@@ -1230,7 +1332,7 @@ const formatCurrency = (amount: number) => {
               const lastPaymentAmount = Number((confirmedDebt.payments ?? []).slice(-1)[0]?.amount ?? Math.max(0, newPaidAmount - previousPaidAmount) ?? 0)
               const remaining = Math.max(0, confirmedDebt.amount - newPaidAmount)
               setDebts((items) => items.map((item) => item.id === confirmedDebt.id ? confirmedDebt : item))
-              if (queued) window.dispatchEvent(new Event('micro-mec-queue-changed'))
+              if (queued) window.dispatchEvent(new Event('electric-house-queue-changed'))
               setModal(null)
               setSelectedDebt(null)
               notify(
@@ -1278,7 +1380,7 @@ const formatCurrency = (amount: number) => {
                         ...(dependencies.length ? { dependsOn: dependencies } : {}), recordCollection: 'products', recordId: target.id,
                       })
                       setProducts((items) => items.filter((product) => product.id !== target.id))
-                      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+                      window.dispatchEvent(new Event('electric-house-queue-changed'))
                     }
                 let queued = false
                 if (dependencies.length || !shouldAttemptServerRequest()) { await queueDelete(); queued = true }
@@ -1393,7 +1495,7 @@ const formatCurrency = (amount: number) => {
       setReceipts((items) =>
         items.filter((item) => item.id !== receiptId)
       )
-      if (queued) { setToast('Stock receipt deletion saved on this device · waiting for Sync Now'); window.dispatchEvent(new Event('micro-mec-queue-changed')) }
+      if (queued) { setToast('Stock receipt deletion saved on this device · waiting for Sync Now'); window.dispatchEvent(new Event('electric-house-queue-changed')) }
       setDeleteReceipt(null)
     } catch (error) {
       console.error('Failed to delete stock:', error)
@@ -1409,9 +1511,9 @@ const formatCurrency = (amount: number) => {
 )}
 
         <footer className="dashboard-footer">
-          <strong>micro-mec</strong>
+          <strong>Electric house</strong>
           <span>Stock, sales, and customer accounts in one place.</span>
-          <small>© {new Date().getFullYear()} Micro-MEC</small>
+          <small>© {new Date().getFullYear()} Electric house</small>
         </footer>
         {toast && <div className="toast"><Check />{toast}</div>}
       </main>
@@ -2089,7 +2191,7 @@ function DebtComposer({ onClose, onSubmit }: {
       </div>
       <form onSubmit={submit} noValidate>
         <label>Customer name
-          <input name="customer" value={customer} onChange={(event) => { setCustomer(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} maxLength={120} required placeholder="e.g. Harbor Market" />
+          <input name="customer" value={customer} onChange={(event) => { setCustomer(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} maxLength={120} required placeholder="Customer name" />
         </label>
         <label>Items bought
           <textarea name="item" value={item} onChange={(event) => { setItem(event.target.value); if (idempotencyRef.current) idempotencyRef.current.value = '' }} required rows={5} maxLength={4000} placeholder="Describe the items bought" />
@@ -2116,15 +2218,15 @@ function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | '
     <div className="modal">
       <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
       <form onSubmit={onSubmit}>
-        <label>Name or reference<input name="name" required placeholder="e.g. 20,000mAh Power Bank" /></label>
+        <label>Name or reference<input name="name" required placeholder="Product or receipt name" /></label>
         {type === 'product' && <div className="form-row">
-          <label>Category<input name="category" required placeholder="e.g. Power banks, Chargers, Earphones" /></label>
-          <label>Model number<input name="model" placeholder="e.g. MEC-PWB-20000" /></label>
+          <label>Category<input name="category" required placeholder="Product category" /></label>
+          <label>Model number<input name="model" placeholder="Model number" /></label>
           <label>Barcode (optional)<input name="barcode" type="text" inputMode="text" autoComplete="off" maxLength={128} placeholder="Keep leading zeroes" /></label>
           <label>Price<input name="price" type="number" min="0" step="0.01" required /></label>
           <label>Quantity<input name="stock" type="number" min="0" required /></label>
         </div>}
-        {type === 'receipt' && <><label>Model number<input name="model" required placeholder="e.g. MEC-RIC-2501" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="e.g. INV-STK-021" /></label></div></>}
+        {type === 'receipt' && <><label>Model number<input name="model" required placeholder="Model number" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="Invoice number" /></label></div></>}
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div>
       </form>
     </div>
@@ -2136,6 +2238,6 @@ function SettingsPage({ settings, setSettings, onSave }: { settings: { workspace
     <div className="settings-card"><Settings /><div><h2>Workspace settings</h2><p>Control preferences, alerts, and defaults for your team.</p></div></div><label>Workspace name<input value={settings.workspace} onChange={(e) => setSettings((s) => ({ ...s, workspace: e.target.value }))} /></label><label>Default currency<select value={settings.currency} onChange={(e) => setSettings((s) => ({ ...s, currency: e.target.value }))}><option value="NGN">₦ — Nigerian Naira</option><option value="USD">$ — US Dollar</option><option value="EUR">€ — Euro</option><option value="GBP">£ — Pound Sterling</option></select></label><label>Notifications<select value={settings.notifications} onChange={(e) => setSettings((s) => ({ ...s, notifications: e.target.value }))}><option>All activity</option><option>Important only</option><option>Disabled</option></select></label><label>Low stock alert threshold<input type="number" value={settings.lowStockThreshold} onChange={(e) => setSettings((s) => ({ ...s, lowStockThreshold: e.target.value }))} /></label><label>Date format<select value={settings.dateFormat} onChange={(e) => setSettings((s) => ({ ...s, dateFormat: e.target.value }))}><option>MMM D, YYYY</option><option>DD/MM/YYYY</option><option>YYYY-MM-DD</option></select></label><button className="primary-button" onClick={onSave}><Check/>Save changes</button></div>
 }
 
-function TeamPage() {
-  return <div className="team-grid mb-20">{[['Alex Morgan', 'Administrator', 'AM'], ['Jordan Lee', 'Sales representative', 'JL'], ['Priya Shah', 'Sales representative', 'PS'], ['Sam Wilson', 'Inventory manager', 'SW']].map(([name, role, initials]) => <div className="team-card" key={name}><div className="avatar team-avatar">{initials}</div><div><b>{name}</b><span>{role}</span></div><span className="status-pill success">Active</span></div>)}</div>
-}
+// function TeamPage() {
+//   return <div className="team-grid mb-20">{[['Alex Morgan', 'Administrator', 'AM'], ['Jordan Lee', 'Sales representative', 'JL'], ['Priya Shah', 'Sales representative', 'PS'], ['Sam Wilson', 'Inventory manager', 'SW']].map(([name, role, initials]) => <div className="team-card" key={name}><div className="avatar team-avatar">{initials}</div><div><b>{name}</b><span>{role}</span></div><span className="status-pill success">Active</span></div>)}</div>
+// }

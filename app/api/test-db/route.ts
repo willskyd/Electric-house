@@ -1,3 +1,4 @@
+import { DB_NAME as ELECTRIC_HOUSE_DB } from "@/lib/database";
 import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
 
@@ -5,7 +6,7 @@ export async function GET() {
   try {
     const client = await clientPromise();
 
-    await client.db("Dashboard").command({ ping: 1 });
+    await client.db(ELECTRIC_HOUSE_DB).command({ ping: 1 });
 
     return NextResponse.json({
       success: true,

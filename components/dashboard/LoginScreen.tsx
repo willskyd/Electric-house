@@ -10,7 +10,7 @@ export function LoginScreen({
   onSignIn: (identifier: string, password: string) => Promise<void>
   checking?: boolean
 }) {
-  const [identifier, setIdentifier] = useState('adminmicro.com')
+  const [identifier, setIdentifier] = useState('electrichouse.com')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -32,7 +32,7 @@ export function LoginScreen({
     <div className="login-screen">
       <div className="login-card">
         <div className="brand-mark"><Store /></div>
-        <div className="eyebrow">Micro-MEC Admin</div>
+        <div className="eyebrow">Electric house Admin</div>
         <h1>{checking ? 'Checking your session' : 'Welcome back'}</h1>
         <p>{checking ? 'Verifying your sign-in…' : 'Sign in to manage your stock and customer accounts.'}</p>
         {!checking && <form onSubmit={submit}>

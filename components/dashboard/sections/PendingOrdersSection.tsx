@@ -111,7 +111,7 @@ export function PendingOrdersSection({ orders, setOrders, setProducts, currency,
       const savedLocally = updated.localPending === true
       setNotice(savedLocally ? `Order ${updated.reference} saved on this device · waiting for Sync Now.` : `Order ${updated.reference} ${action === 'accept' ? 'accepted and payment confirmed' : 'rejected'} by the server.`)
       onActivity(savedLocally ? `Pending order ${action} saved locally` : `Pending order ${action} confirmed`, `${updated.reference} · ${updated.customerName} · ${money(updated.totalMinor / 100, currency)}`)
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Order action could not be saved')
     } finally { lock.current = false; setSaving(false) }

@@ -30,10 +30,10 @@ export function StocksSection({
   return (
     <>
       <div className="stat-grid">
-        <Stat icon={<Package />} label="Total products" value={products.length.toLocaleString()} change="+12.5%" positive />
-        <Stat icon={<TrendingUpIcon />} label="Total stock value" value={money(products.reduce((a, p) => a + p.stock * p.price, 0))} change="+8.2%" positive />
+        <Stat icon={<Package />} label="Total products" value={products.length.toLocaleString()} />
+        <Stat icon={<TrendingUpIcon />} label="Total stock value" value={money(products.reduce((a, p) => a + p.stock * p.price, 0))} />
         <Stat icon={<Package />} label="Low stock items" value={products.filter((p) => p.status === 'Low stock').length.toString()} change="Needs attention" />
-        <Stat icon={<Package />} label="Out of stock" value={products.filter((p) => p.stock === 0).length.toString()} change="-2 this week" positive />
+        <Stat icon={<Package />} label="Out of stock" value={products.filter((p) => p.stock === 0).length.toString()} />
       </div>
 
       <section className="panel">

@@ -189,8 +189,8 @@ export function PosCart({
       setRecentSales((current) => [...localSales, ...current.filter((sale) => !localSales.some((local) => local.id === sale.id))])
     }).catch(() => undefined)
     refreshLocalSales()
-    window.addEventListener('micro-mec-queue-changed', refreshLocalSales)
-    return () => { cancelled = true; window.removeEventListener('micro-mec-queue-changed', refreshLocalSales) }
+    window.addEventListener('electric-house-queue-changed', refreshLocalSales)
+    return () => { cancelled = true; window.removeEventListener('electric-house-queue-changed', refreshLocalSales) }
   }, [])
 
   const updateCart = useCallback((update: (lines: CartLine[]) => CartLine[]) => {
@@ -547,7 +547,7 @@ export function PosCart({
         ...(productDependencies.length ? { dependsOn: productDependencies } : {}),
       }, localLines.map((line) => ({ productId: line.productId, quantity: line.quantity, unitPriceMinor: line.unitPriceMinor })), lowStockThreshold)
       onLocalSale(stockUpdates as unknown as Product[])
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
       await markSaleCompleted(localSale, true)
     }
     try {
@@ -721,7 +721,7 @@ export function PosCart({
         else { saved = await saveLocally(); queued = true }
       } else { saved = await saveLocally(); queued = true }
       onOrderCreated(saved)
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
       updateCart(() => []); setQuantityDrafts({}); setCashTendered(''); setCustomerName(''); setCustomerPhone('')
       setMessage(queued ? `${reference} saved on this device and is waiting for Sync Now.` : `${reference} saved to Pending Orders.`)
     } catch (cause) {
@@ -918,7 +918,7 @@ export function PosCart({
       </div>
 
       {printRequest && <div className="receipt-print">
-        <header><h1>MICROMEC</h1>{(printRequest.sale.businessName || workspace).replace(/[^a-z0-9]/gi, '').toLowerCase() !== 'micromec' && <p className="receipt-business-name">{printRequest.sale.businessName || workspace}</p>}<p className="receipt-document-title">SALES RECEIPT</p></header>
+        <header><h1><span>Electric</span><span>House</span></h1><p className="receipt-document-title">SALES RECEIPT</p></header>
         <div className="receipt-meta"><span>Receipt: {printRequest.sale.receiptNumber}</span><span>{formatSaleDate(printRequest.sale.createdAt)}</span>{printRequest.sale.customerName && <span>Customer: {printRequest.sale.customerName}{printRequest.sale.customerPhone ? ` · ${printRequest.sale.customerPhone}` : ''}</span>}{printRequest.sale.pendingOrderReference && <span>Order: {printRequest.sale.pendingOrderReference}</span>}{printRequest.sale.localPending && <strong>Pending synchronization</strong>}</div>
         <table><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>
           {printRequest.sale.items.map((item) => <tr key={item.productId}><td>{item.name}<small>{item.sku}{item.barcode ? ` · ${item.barcode}` : ''}</small></td><td>{item.quantity}</td><td>{moneyMinor(item.unitPriceMinor, printRequest.sale.currency)}</td><td>{moneyMinor(item.lineTotalMinor, printRequest.sale.currency)}</td></tr>)}

@@ -42,7 +42,7 @@ export function Sidebar({
       <a href="/">
       <div className="brand">
         <div className="brand-mark"><Store /></div>
-        {sidebar && <><strong>micro-mec</strong><span className="brand-dot" /></>}
+        {sidebar && <><strong>Electric house</strong><span className="brand-dot" /></>}
         <button className="close-button md:hidden" onClick={onClose} aria-label="Close">
           <X />
         </button>

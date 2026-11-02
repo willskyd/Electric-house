@@ -1,3 +1,4 @@
+import { DB_NAME as ELECTRIC_HOUSE_DB } from "@/lib/database";
 import { createHash } from 'node:crypto'
 import clientPromise from '@/lib/mongodb'
 import {
@@ -13,7 +14,7 @@ import {
 } from '@/lib/inventory'
 import { NextResponse } from 'next/server'
 
-const DB = 'Dashboard'
+const DB = ELECTRIC_HOUSE_DB
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const CONDITIONS = ['New', 'Used', 'Damaged'] as const
 

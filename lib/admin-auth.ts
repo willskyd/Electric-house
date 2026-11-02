@@ -1,13 +1,37 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export const ADMIN_SESSION_COOKIE = "micro-mec-session";
+export const ADMIN_SESSION_COOKIE = "electric-house-session";
 const SESSION_TTL_SECONDS = 60 * 60 * 8;
+
+export type AdminAuthConfiguration = {
+  adminEmail: string;
+  adminPassword: string;
+  missingVariables: string[];
+};
 
 type SessionPayload = {
   email: string;
   role: "admin";
   expiresAt: number;
 };
+
+export function getAdminAuthConfiguration(): AdminAuthConfiguration {
+  const isProduction = process.env.NODE_ENV === "production";
+  const adminEmail = process.env.ELECTRIC_HOUSE_ADMIN_EMAIL ?? (isProduction ? "" : "electrichouse.com");
+  const adminPassword = process.env.ELECTRIC_HOUSE_ADMIN_PASSWORD ?? (isProduction ? "" : "Electric123");
+  const jwtSecret = process.env.JWT_SECRET;
+  const missingVariables: string[] = [];
+
+  if (!adminEmail.trim()) missingVariables.push("ELECTRIC_HOUSE_ADMIN_EMAIL");
+  if (!adminPassword) missingVariables.push("ELECTRIC_HOUSE_ADMIN_PASSWORD");
+  if (!jwtSecret || jwtSecret.length < 32) missingVariables.push("JWT_SECRET (at least 32 characters)");
+
+  return { adminEmail, adminPassword, missingVariables };
+}
+
+export function adminAuthConfigurationMessage(missingVariables: string[]): string {
+  return `Admin sign-in is not configured on this server. Configure: ${missingVariables.join(", ")}`;
+}
 
 function getSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -59,7 +83,7 @@ export function readAdminSession(token: string | undefined, now = Date.now()): S
 export const ADMIN_SESSION_MAX_AGE = SESSION_TTL_SECONDS;
 
 export function safeStringEqual(left: string, right: string): boolean {
-  const leftDigest = createHmac("sha256", "micro-mec-login-compare").update(left).digest();
-  const rightDigest = createHmac("sha256", "micro-mec-login-compare").update(right).digest();
+  const leftDigest = createHmac("sha256", "electric-house-login-compare").update(left).digest();
+  const rightDigest = createHmac("sha256", "electric-house-login-compare").update(right).digest();
   return timingSafeEqual(leftDigest, rightDigest);
 }

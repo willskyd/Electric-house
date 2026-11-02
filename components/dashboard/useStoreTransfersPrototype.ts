@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Product, PrototypeBranch, PrototypeTransfer, StoreReceivingRecord } from './types'
-import { cacheServerCollection, findInventoryDependencies, listQueuedOperations, readLocalCollection, saveLocalRecordsAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, type QueuedOperation } from '@/lib/offline-queue'
+import { cacheServerCollection, findInventoryDependencies, listQueuedOperations, readLocalCollection, reconcileServerCollection, saveLocalRecordsAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, type QueuedOperation } from '@/lib/offline-queue'
 
 type StoreTransferState = { receivingRecords: StoreReceivingRecord[]; branches: PrototypeBranch[]; transfers: PrototypeTransfer[] }
 const EMPTY: StoreTransferState = { receivingRecords: [], branches: [], transfers: [] }
@@ -32,22 +32,47 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
 
   const reload = useCallback(async () => {
     const [cachedReceipts, cachedBranches, cachedTransfers] = await Promise.all([readLocalCollection<StoreReceivingRecord>('storeReceipts'), readLocalCollection<PrototypeBranch>('branches'), readLocalCollection<PrototypeTransfer>('transfers')])
-    setState((current) => ({ receivingRecords: cachedReceipts.length ? cachedReceipts : current.receivingRecords, branches: cachedBranches.length ? cachedBranches : current.branches, transfers: cachedTransfers.length ? cachedTransfers : current.transfers }))
-    if (!navigator.onLine) return
-    const [receiptsResponse, branchesResponse, transfersResponse] = await Promise.all([fetch('/api/store', { cache: 'no-store' }), fetch('/api/branches', { cache: 'no-store' }), fetch('/api/transfers', { cache: 'no-store' })])
-    const [receivingRecords, branches, transfers] = await Promise.all([readJson<StoreReceivingRecord[]>(receiptsResponse, 'Store records are unavailable'), readJson<PrototypeBranch[]>(branchesResponse, 'Branches are unavailable'), readJson<PrototypeTransfer[]>(transfersResponse, 'Transfer history is unavailable')])
-    if (!Array.isArray(receivingRecords) || !Array.isArray(branches) || !Array.isArray(transfers)) throw new Error('The server returned invalid Store or Transfer records')
-    await Promise.all([cacheServerCollection('storeReceipts', receivingRecords), cacheServerCollection('branches', branches), cacheServerCollection('transfers', transfers)])
-    const [mergedReceipts, mergedBranches, mergedTransfers] = await Promise.all([readLocalCollection<StoreReceivingRecord>('storeReceipts'), readLocalCollection<PrototypeBranch>('branches'), readLocalCollection<PrototypeTransfer>('transfers')])
-    setState({ receivingRecords: mergedReceipts, branches: mergedBranches, transfers: mergedTransfers })
+    if (!navigator.onLine) {
+      setState({ receivingRecords: cachedReceipts, branches: cachedBranches, transfers: cachedTransfers })
+      setPersistenceError('')
+      return
+    }
+
+    try {
+      const [receiptsResponse, branchesResponse, transfersResponse] = await Promise.all([fetch('/api/store', { cache: 'no-store' }), fetch('/api/branches', { cache: 'no-store' }), fetch('/api/transfers', { cache: 'no-store' })])
+      const [receivingRecords, branches, transfers] = await Promise.all([readJson<StoreReceivingRecord[]>(receiptsResponse, 'Store records are unavailable'), readJson<PrototypeBranch[]>(branchesResponse, 'Branches are unavailable'), readJson<PrototypeTransfer[]>(transfersResponse, 'Transfer history is unavailable')])
+      if (![receivingRecords, branches, transfers].every((records) => Array.isArray(records) && records.every((record) => record && (typeof record.id === 'string' || typeof record.id === 'number')))) {
+        throw new Error('The server returned invalid Store or Transfer records')
+      }
+      await Promise.all([
+        reconcileServerCollection('storeReceipts', receivingRecords as Array<StoreReceivingRecord & Record<string, unknown>>),
+        reconcileServerCollection('branches', branches as Array<PrototypeBranch & Record<string, unknown>>),
+        reconcileServerCollection('transfers', transfers as Array<PrototypeTransfer & Record<string, unknown>>),
+      ])
+      const [mergedReceipts, mergedBranches, mergedTransfers] = await Promise.all([readLocalCollection<StoreReceivingRecord>('storeReceipts'), readLocalCollection<PrototypeBranch>('branches'), readLocalCollection<PrototypeTransfer>('transfers')])
+      setState({ receivingRecords: mergedReceipts, branches: mergedBranches, transfers: mergedTransfers })
+      setPersistenceError('')
+    } catch (error) {
+      setState({ receivingRecords: cachedReceipts, branches: cachedBranches, transfers: cachedTransfers })
+      throw error
+    }
   }, [])
 
   useEffect(() => {
     let cancelled = false
-    void reload().catch((error: unknown) => {
-      if (!cancelled) setPersistenceError(error instanceof Error ? error.message : 'Store and Transfer records could not be loaded')
-    }).finally(() => { if (!cancelled) setHydrated(true) })
-    return () => { cancelled = true }
+    const refresh = () => {
+      void reload().catch((error: unknown) => {
+        if (!cancelled) setPersistenceError(error instanceof Error ? error.message : 'Store and Transfer records could not be loaded')
+      }).finally(() => { if (!cancelled) setHydrated(true) })
+    }
+    refresh()
+    window.addEventListener('online', refresh)
+    window.addEventListener('electric-house-queue-changed', refresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener('online', refresh)
+      window.removeEventListener('electric-house-queue-changed', refresh)
+    }
   }, [reload])
 
   const addReceivingRecord = useCallback(async (record: StoreReceivingRecord) => {
@@ -72,7 +97,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
     }
     setState((current) => ({ ...current, receivingRecords: [saved, ...current.receivingRecords.filter((item) => item.id !== saved.id)] }))
     if (response?.ok) await cacheServerCollection('storeReceipts', [saved])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return saved
   }, [onInventoryChanged])
 
@@ -101,7 +126,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
     }
     setState((current) => ({ ...current, receivingRecords: current.receivingRecords.map((item) => item.id === saved.id ? saved : item) }))
     if (response?.ok) await cacheServerCollection('storeReceipts', [saved])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return saved
   }, [getEditRequestKey, onInventoryChanged])
 
@@ -127,7 +152,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
     }
     setState((current) => ({ ...current, transfers: [saved, ...current.transfers.filter((item) => item.id !== saved.id)] }))
     if (response?.ok) await cacheServerCollection('transfers', [saved])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return saved
   }, [onInventoryChanged])
 
@@ -158,7 +183,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
     }
     setState((current) => ({ ...current, transfers: current.transfers.map((item) => item.id === saved.id ? saved : item) }))
     if (response?.ok) await cacheServerCollection('transfers', [saved])
-    window.dispatchEvent(new Event('micro-mec-queue-changed'))
+    window.dispatchEvent(new Event('electric-house-queue-changed'))
     return saved
   }, [getEditRequestKey, onInventoryChanged])
 
@@ -177,7 +202,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
       }
       setState((current) => ({ ...current, branches: [...current.branches.filter((item) => item.id !== branch.id), branch] }))
       if (response?.ok) await cacheServerCollection('branches', [branch])
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
       return null
     } catch (error) { return error instanceof Error ? error.message : 'Branch could not be saved' }
   }, [])
@@ -200,7 +225,7 @@ export function useStoreTransfersPrototype(onInventoryChanged?: (updates: Produc
       }
       setState((current) => ({ ...current, branches: current.branches.map((item) => item.id === branch.id ? branch : item) }))
       if (response?.ok) await cacheServerCollection('branches', [branch])
-      window.dispatchEvent(new Event('micro-mec-queue-changed'))
+      window.dispatchEvent(new Event('electric-house-queue-changed'))
       return null
     } catch (error) { return error instanceof Error ? error.message : 'Branch could not be renamed' }
   }, [state.branches])

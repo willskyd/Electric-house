@@ -2,19 +2,14 @@ import { NextResponse } from "next/server";
 import clientPromise from "@/lib/mongodb";
 import { INVENTORY_DB, InventoryError } from "@/lib/inventory";
 
-const DEFAULT_BRANCHES = [
-  { id: "branch-1", name: "Branch 1", createdAt: "" },
-  { id: "branch-2", name: "Branch 2", createdAt: "" },
-];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function GET() {
   try {
     const client = await clientPromise();
-    const records = await client.db(INVENTORY_DB).collection("branches").find({}).sort({ name: 1 }).limit(500).toArray();
+    const records = await client.db(INVENTORY_DB).collection("branches").find({}).sort({ name: 1 }).toArray();
     const persisted = records.map(({ _id, ...record }) => record);
-    const known = new Set(persisted.map((branch) => branch.id));
-    return NextResponse.json([...DEFAULT_BRANCHES.filter((branch) => !known.has(branch.id)), ...persisted]);
+    return NextResponse.json(persisted);
   } catch (error) {
     console.error("Failed to load branches:", error);
     return NextResponse.json({ message: "Branch list is unavailable" }, { status: 500 });

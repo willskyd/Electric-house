@@ -1,10 +1,11 @@
+import { DB_NAME as ELECTRIC_HOUSE_DB } from "@/lib/database";
 import { createHash } from "node:crypto";
 import type { ClientSession, Document } from "mongodb";
 import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
 import { ensureCollections, MOVEMENT_COLLECTION, recordStockMovement } from "@/lib/inventory";
 
-const DB_NAME = "Dashboard";
+const DB_NAME = ELECTRIC_HOUSE_DB;
 const SALES_COLLECTION = "sales";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -291,7 +292,7 @@ export async function POST(request: Request) {
 
         const workspace = typeof settings?.workspace === "string" && settings.workspace.trim()
           ? settings.workspace.trim()
-          : "Micro-mec";
+          : "Electric House";
         const currencySetting = settings?.currency;
         const currency = ["NGN", "USD", "EUR", "GBP"].includes(String(currencySetting))
           ? String(currencySetting)

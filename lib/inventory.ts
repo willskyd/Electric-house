@@ -1,6 +1,8 @@
 import type { ClientSession, Collection, Db, Document, MongoClient } from "mongodb";
 
-export const INVENTORY_DB = "Dashboard";
+import { DB_NAME } from "./database";
+
+export const INVENTORY_DB = DB_NAME;
 export const PRODUCT_COLLECTION = "products";
 export const MOVEMENT_COLLECTION = "stockMovements";
 

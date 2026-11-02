@@ -1,8 +1,9 @@
+import { DB_NAME as ELECTRIC_HOUSE_DB } from "@/lib/database";
 import { createHash } from "node:crypto";
 import clientPromise from "@/lib/mongodb";
 import { NextResponse } from "next/server";
 
-const DB_NAME = "Dashboard";
+const DB_NAME = ELECTRIC_HOUSE_DB;
 const COLLECTION = "activities";
 
 export async function PATCH(
