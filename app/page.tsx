@@ -166,6 +166,10 @@ export default function Page() {
   const [dark, setDark] = useState(false)
   const [settings, setSettings] = useState({ workspace: 'Electric house', currency: 'NGN', notifications: 'All activity', lowStockThreshold: '30', dateFormat: 'MMM D, YYYY' })
   const settingsRevision = useRef(0)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const settingsSaveLock = useRef(false)
+  const [productSaving, setProductSaving] = useState(false)
+  const productSaveLock = useRef(false)
   const [sidebar, setSidebar] = useState(() => (typeof window !== 'undefined' ? window.innerWidth > 768 : true))
   const [modal, setModal] = useState<'product' | 'debt' | 'receipt' | 'detail' | 'login' | null>(null)
   const [selectedDebt, setSelectedDebt] = useState<Debt | null>(null)
@@ -678,28 +682,47 @@ const formatCurrency = (amount: number) => {
   }
 
   const payload = { ...newProduct, operationId }
-  const saveLocally = async () => {
+    const saveLocally = async () => {
     await saveLocalRecordAndOperation('products', id, newProduct, {
-      id: operationId, type: 'product.create', label: `Add product ${name}`, target: '/api/products', method: 'POST', payload,
-      recordCollection: 'products', recordId: id,
+      id: operationId,
+      type: 'product.create',
+      label: `Add product ${name}`,
+      target: '/api/products',
+      method: 'POST',
+      payload,
+      recordCollection: 'products',
+      recordId: id,
     })
+
     setProducts((current) => [newProduct, ...current.filter((item) => item.id !== id)])
     window.dispatchEvent(new Event('electric-house-queue-changed'))
     return newProduct
   }
 
+  if (productSaveLock.current) return
+  productSaveLock.current = true
+  setProductSaving(true)
+
   try {
     let savedProduct: Product = newProduct
     let queued = false
     let response: Response | null = null
+
     if (shouldAttemptServerRequest()) {
-      try { response = await fetch('/api/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
-      catch (error) {
+      try {
+        response = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      } catch (error) {
         if (!(error instanceof TypeError)) throw error
-        savedProduct = await saveLocally(); queued = true
+        savedProduct = await saveLocally()
+        queued = true
       }
     } else {
-      savedProduct = await saveLocally(); queued = true
+      savedProduct = await saveLocally()
+      queued = true
     }
     if (!queued && response && !response.ok) {
       if (await shouldQueueAfterServerFailure(response)) {
@@ -731,12 +754,14 @@ const formatCurrency = (amount: number) => {
     if (queued) setToast('Product saved on this device · waiting for Sync Now')
   } 
   
-  catch (error) {
+       catch (error) {
     console.error(error)
     setToast(error instanceof Error ? error.message : 'Failed to add product')
+  } finally {
+    productSaveLock.current = false
+    setProductSaving(false)
   }
 }
-
 
 
 
@@ -1221,47 +1246,126 @@ const formatCurrency = (amount: number) => {
             />
           )}
 
-   {section === 'Settings' && (
+   
+{section === 'Settings' && (
   <SettingsPage
     settings={settings}
     setSettings={setSettings}
+    saving={settingsSaving}
     onSave={async () => {
+      if (settingsSaveLock.current) return
+
+      settingsSaveLock.current = true
+      setSettingsSaving(true)
+
       const operationId = crypto.randomUUID()
       const expectedRevision = settingsRevision.current
       const payload = { ...settings, operationId, expectedRevision }
-      const queuedSettings = (await listQueuedOperations()).filter((operation) => operation.type === 'settings.update' && operation.status !== 'synchronized')
-      const queueSettings = async () => {
-        const localValue = { id: 'workspace', settings, revision: expectedRevision + 1 }
-        await saveLocalRecordAndOperation('settings', 'workspace', localValue, {
-          id: operationId, type: 'settings.update', label: 'Update workspace settings', target: '/api/settings', method: 'PATCH',
-          payload, ...(queuedSettings.length ? { dependsOn: queuedSettings.map((operation) => operation.id) } : {}), recordCollection: 'settings', recordId: 'workspace',
-        })
-        settingsRevision.current = expectedRevision + 1
-        window.dispatchEvent(new Event('electric-house-queue-changed'))
-        setToast('Settings saved on this device · waiting for Sync Now')
-      }
+
       try {
-        if (queuedSettings.length || !shouldAttemptServerRequest()) return await queueSettings()
-      let response: Response
-      try { response = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) }
-        catch (error) { if (!(error instanceof TypeError)) throw error; return await queueSettings() }
+        const queuedSettings = (await listQueuedOperations()).filter(
+          (operation) =>
+            operation.type === 'settings.update' &&
+            operation.status !== 'synchronized'
+        )
+
+        const queueSettings = async () => {
+          const localValue = {
+            id: 'workspace',
+            settings,
+            revision: expectedRevision + 1,
+          }
+
+          await saveLocalRecordAndOperation('settings', 'workspace', localValue, {
+            id: operationId,
+            type: 'settings.update',
+            label: 'Update workspace settings',
+            target: '/api/settings',
+            method: 'PATCH',
+            payload,
+            ...(queuedSettings.length
+              ? { dependsOn: queuedSettings.map((operation) => operation.id) }
+              : {}),
+            recordCollection: 'settings',
+            recordId: 'workspace',
+          })
+
+          settingsRevision.current = expectedRevision + 1
+          window.dispatchEvent(new Event('electric-house-queue-changed'))
+
+          setToast('Settings saved on this device · waiting for Sync Now')
+          window.setTimeout(() => setToast(''), 4000)
+        }
+
+        if (queuedSettings.length || !shouldAttemptServerRequest()) {
+          await queueSettings()
+          return
+        }
+
+        let response: Response
+
+        try {
+          response = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error
+          await queueSettings()
+          return
+        }
+
         if (!response.ok) {
           const result = await response.json().catch(() => null)
-          throw new Error(typeof result?.message === 'string' ? result.message : `Settings update failed (${response.status})`)
+          throw new Error(
+            typeof result?.message === 'string'
+              ? result.message
+              : `Settings update failed (${response.status})`
+          )
         }
+
         const savedSettings = await response.json()
-        settingsRevision.current = typeof savedSettings.revision === 'number' ? savedSettings.revision : expectedRevision + 1
+
+        settingsRevision.current =
+          typeof savedSettings.revision === 'number'
+            ? savedSettings.revision
+            : expectedRevision + 1
+
         const { revision, ...settingsValue } = savedSettings
+
         setSettings((current) => ({ ...current, ...settingsValue }))
-        await cacheServerCollection('settings', [{ id: 'workspace', settings: settingsValue, revision: settingsRevision.current }])
-        notify('Workspace settings saved')
+
+        await cacheServerCollection('settings', [
+          {
+            id: 'workspace',
+            settings: settingsValue,
+            revision: settingsRevision.current,
+          },
+        ])
+
+        await notify('Workspace settings saved')
+
+        // This confirmation is independent of notification preferences.
+        setToast('Settings saved successfully')
+        window.setTimeout(() => setToast(''), 4000)
+
       } catch (error) {
         console.error('Failed to save settings:', error)
-        setToast(error instanceof Error ? error.message : 'Failed to save settings')
+        setToast(
+          error instanceof Error
+            ? error.message
+            : 'Failed to save settings'
+        )
+        window.setTimeout(() => setToast(''), 4000)
+      } finally {
+        settingsSaveLock.current = false
+        setSettingsSaving(false)
       }
     }}
   />
-)}          
+)}
+         
       
       {/* {section === 'Team members' && <TeamPage />} */}
         </div>
@@ -1270,8 +1374,9 @@ const formatCurrency = (amount: number) => {
 
         {modal && modal !== 'detail' && (
           <RecordModal
-           type={modal}
-           onClose={() => setModal(null)}
+          type={modal}
+          saving={productSaving}
+          onClose={() => setModal(null)}
            onSubmit={
               modal === 'product'
               ? addProduct
@@ -2212,8 +2317,7 @@ function DebtComposer({ onClose, onSubmit }: {
   </div>
 }
 
-function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void }) {
-  if (type === 'debt') return <DebtComposer onClose={onClose} onSubmit={onSubmit} />
+function RecordModal({ type, onClose, onSubmit, saving = false }: { type: 'product' | 'debt' | 'receipt' | 'login' | 'detail'; onClose: () => void; onSubmit: (e: React.FormEvent<HTMLFormElement>) => void; saving?: boolean }) {  if (type === 'debt') return <DebtComposer onClose={onClose} onSubmit={onSubmit} />
   return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}>
     <div className="modal">
       <div className="modal-header"><div><div className="eyebrow">Workspace action</div><h2>{type === 'product' ? 'Add new product' : type === 'receipt' ? 'Record stock receipt' : 'Workspace action'}</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
@@ -2227,16 +2331,127 @@ function RecordModal({ type, onClose, onSubmit }: { type: 'product' | 'debt' | '
           <label>Quantity<input name="stock" type="number" min="0" required /></label>
         </div>}
         {type === 'receipt' && <><label>Model number<input name="model" required placeholder="Model number" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="Invoice number" /></label></div></>}
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit"><Check />Save record</button></div>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+          <button
+          className="primary-button"
+          type="submit"
+         disabled={type === 'product' && saving}
+         >
+        {type === 'product' && saving ? 'Saving...' : <><Check />Save record</>}
+       </button>
+        </div>
       </form>
     </div>
   </div>
 }
 
-function SettingsPage({ settings, setSettings, onSave }: { settings: { workspace: string; currency: string; notifications: string; lowStockThreshold: string; dateFormat: string }; setSettings: React.Dispatch<React.SetStateAction<typeof settings>>; onSave: () => void }) {
-  return <div className="settings-page mb-20">
-    <div className="settings-card"><Settings /><div><h2>Workspace settings</h2><p>Control preferences, alerts, and defaults for your team.</p></div></div><label>Workspace name<input value={settings.workspace} onChange={(e) => setSettings((s) => ({ ...s, workspace: e.target.value }))} /></label><label>Default currency<select value={settings.currency} onChange={(e) => setSettings((s) => ({ ...s, currency: e.target.value }))}><option value="NGN">₦ — Nigerian Naira</option><option value="USD">$ — US Dollar</option><option value="EUR">€ — Euro</option><option value="GBP">£ — Pound Sterling</option></select></label><label>Notifications<select value={settings.notifications} onChange={(e) => setSettings((s) => ({ ...s, notifications: e.target.value }))}><option>All activity</option><option>Important only</option><option>Disabled</option></select></label><label>Low stock alert threshold<input type="number" value={settings.lowStockThreshold} onChange={(e) => setSettings((s) => ({ ...s, lowStockThreshold: e.target.value }))} /></label><label>Date format<select value={settings.dateFormat} onChange={(e) => setSettings((s) => ({ ...s, dateFormat: e.target.value }))}><option>MMM D, YYYY</option><option>DD/MM/YYYY</option><option>YYYY-MM-DD</option></select></label><button className="primary-button" onClick={onSave}><Check/>Save changes</button></div>
+
+function SettingsPage({
+  settings,
+  setSettings,
+  onSave,
+  saving,
+}: {
+  settings: {
+    workspace: string
+    currency: string
+    notifications: string
+    lowStockThreshold: string
+    dateFormat: string
+  }
+  setSettings: React.Dispatch<React.SetStateAction<typeof settings>>
+  onSave: () => void | Promise<void>
+  saving: boolean
+}) {
+  return (
+    <div className="settings-page mb-20">
+      <div className="settings-card">
+        <Settings />
+        <div>
+          <h2>Workspace settings</h2>
+          <p>Control preferences, alerts, and defaults for your team.</p>
+        </div>
+      </div>
+
+      <label>
+        Workspace name
+        <input
+          value={settings.workspace}
+          onChange={(e) =>
+            setSettings((s) => ({ ...s, workspace: e.target.value }))
+          }
+        />
+      </label>
+
+      <label>
+        Default currency
+        <select
+          value={settings.currency}
+          onChange={(e) =>
+            setSettings((s) => ({ ...s, currency: e.target.value }))
+          }
+        >
+          <option value="NGN">₦ — Nigerian Naira</option>
+          <option value="USD">$ — US Dollar</option>
+          <option value="EUR">€ — Euro</option>
+          <option value="GBP">£ — Pound Sterling</option>
+        </select>
+      </label>
+
+      <label>
+        Notifications
+        <select
+          value={settings.notifications}
+          onChange={(e) =>
+            setSettings((s) => ({ ...s, notifications: e.target.value }))
+          }
+        >
+          <option>All activity</option>
+          <option>Important only</option>
+          <option>Disabled</option>
+        </select>
+      </label>
+
+      <label>
+        Low stock alert threshold
+        <input
+          type="number"
+          value={settings.lowStockThreshold}
+          onChange={(e) =>
+            setSettings((s) => ({ ...s, lowStockThreshold: e.target.value }))
+          }
+        />
+      </label>
+
+      <label>
+        Date format
+        <select
+          value={settings.dateFormat}
+          onChange={(e) =>
+            setSettings((s) => ({ ...s, dateFormat: e.target.value }))
+          }
+        >
+          <option>MMM D, YYYY</option>
+          <option>DD/MM/YYYY</option>
+          <option>YYYY-MM-DD</option>
+        </select>
+      </label>
+
+      <button
+        className="primary-button"
+        onClick={onSave}
+        disabled={saving}
+      >
+        {saving ? 'Saving...' : (
+          <>
+            <Check /> Save changes
+          </>
+        )}
+      </button>
+    </div>
+  )
 }
+
 
 // function TeamPage() {
 //   return <div className="team-grid mb-20">{[['Alex Morgan', 'Administrator', 'AM'], ['Jordan Lee', 'Sales representative', 'JL'], ['Priya Shah', 'Sales representative', 'PS'], ['Sam Wilson', 'Inventory manager', 'SW']].map(([name, role, initials]) => <div className="team-card" key={name}><div className="avatar team-avatar">{initials}</div><div><b>{name}</b><span>{role}</span></div><span className="status-pill success">Active</span></div>)}</div>
