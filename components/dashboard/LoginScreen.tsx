@@ -6,9 +6,11 @@ import { LogIn, Store } from 'lucide-react'
 export function LoginScreen({
   onSignIn,
   checking = false,
+  verificationMessage = '',
 }: {
   onSignIn: (identifier: string, password: string) => Promise<void>
   checking?: boolean
+  verificationMessage?: string
 }) {
   const [identifier, setIdentifier] = useState('electrichouse.com')
   const [password, setPassword] = useState('')
@@ -36,6 +38,7 @@ export function LoginScreen({
         <h1>{checking ? 'Checking your session' : 'Welcome back'}</h1>
         <p>{checking ? 'Verifying your sign-in…' : 'Sign in to manage your stock and customer accounts.'}</p>
         {!checking && <form onSubmit={submit}>
+          {verificationMessage && <p className="login-error" role="status">{verificationMessage}</p>}
           <label>
             Admin email or username
             <input

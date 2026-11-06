@@ -178,6 +178,7 @@ export default function Page() {
   const [notifications, setNotifications] = useState(false)
   const [signedIn, setSignedIn] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
+  const [authError, setAuthError] = useState('')
   const [activities, setActivities] = useState<Activity[]>([])
   const [selectedInbox, setSelectedInbox] = useState<Activity | null>(null)
   const pendingPrinter = useRef<((sale: Sale) => Promise<void>) | null>(null)
@@ -188,14 +189,18 @@ export default function Page() {
     fetch('/api/auth/session', { cache: 'no-store' })
       .then(async (response) => {
         const result: unknown = await response.json().catch(() => null)
-        if (!response.ok || typeof result !== 'object' || result === null || !('authenticated' in result) || typeof result.authenticated !== 'boolean') {
-          throw new Error('Admin session could not be verified')
+        if (response.ok && typeof result === 'object' && result !== null && 'authenticated' in result && typeof result.authenticated === 'boolean') {
+          if (!cancelled) setSignedIn(result.authenticated)
+        } else if (!cancelled) {
+          setAuthError('Could not verify your existing session. Please sign in again.')
+          setSignedIn(false)
         }
-        if (!cancelled) setSignedIn(result.authenticated)
       })
-      .catch((error: unknown) => {
-        console.error('Could not verify admin session:', error)
-        if (!cancelled) setSignedIn(false)
+      .catch(() => {
+        if (!cancelled) {
+          setAuthError('Could not verify your existing session. Please sign in again.')
+          setSignedIn(false)
+        }
       })
       .finally(() => { if (!cancelled) setAuthChecking(false) })
     return () => { cancelled = true }
@@ -553,7 +558,7 @@ const notify = async (
   }, [])
 
   if (authChecking) return null
-  if (!signedIn) return <LoginScreen onSignIn={async (identifier, password) => {
+  if (!signedIn) return <LoginScreen verificationMessage={authError} onSignIn={async (identifier, password) => {
     const response = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
