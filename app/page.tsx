@@ -1475,6 +1475,28 @@ const formatCurrency = (amount: number) => {
                     const operationId = crypto.randomUUID()
                     const payload = { id: target.id, operationId }
                     const queuedOperations = await listQueuedOperations()
+                    console.table(
+  queuedOperations
+    .filter((operation) => {
+      if (operation.status === 'synchronized') return false
+      if (operation.recordId === target.id && operation.type.startsWith('product.')) return true
+      if (operation.payload.productId === target.id) return true
+
+      return ['items', 'lines'].some((key) => {
+        const items = operation.payload[key]
+        return Array.isArray(items) &&
+          items.some((item) =>
+            item &&
+            typeof item === 'object' &&
+            'productId' in item &&
+            item.productId === target.id
+          )
+      })
+    })
+    .map(({ id, type, label, status, recordId, dependsOn }) => ({
+      id, type, label, status, recordId, dependsOn,
+    }))
+)
                     const dependencies = queuedOperations.filter((operation) => {
                       if (operation.status === 'synchronized') return false
                       if (operation.recordId === target.id && operation.type.startsWith('product.')) return true
@@ -1501,10 +1523,19 @@ const formatCurrency = (amount: number) => {
                     await queueDelete(); queued = true
                   }
                   if (!queued) {
-                    await deleteLocalRecord('products', target.id)
-                    setProducts((items) => items.filter((product) => product.id !== target.id))
-                  }
+               // Update the interface immediately after the server confirms deletion.
+                  setProducts((items) => items.filter((product) => product.id !== target.id))
+              setDeleteProduct(null)
+
+               // Local cache cleanup must not turn a successful server deletion into an error.
+                  try {
+                   await deleteLocalRecord('products', target.id)
+                } catch (localError) {
+               console.error('Product was deleted on the server, but local cache cleanup failed:', localError)
+               }
+              }
                 }
+                setDeleteProduct(null)
                notify(
                 `Product deleted: ${target.name}`,
                 `Product was removed from inventory. Model: ${target.model}. SKU: ${target.sku}. Category: ${target.category}. Last recorded stock: ${target.stock} units.${queued ? ' Saved locally and awaiting manual synchronization.' : ''}`,

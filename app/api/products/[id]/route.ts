@@ -113,10 +113,11 @@ export async function PATCH(
     if (operationId) {
       const replay = (existing.appliedOperations ?? []).find((operation: any) => operation.id === operationId);
       if (replay) {
-        if (replay.hash !== requestHash) return NextResponse.json({ message: "This product operation ID was used for different updates" }, { status: 409 });
-        const { _id, appliedOperations, ...saved } = existing;
-        return NextResponse.json(saved);
+        if (replay.requestHash !== requestHash) {
+        throw new InventoryError("This delete operation ID was used for different product details", 409);
       }
+       return { success: true };
+     }
       const revision = Number.isSafeInteger(existing.revision) ? existing.revision : 0;
       if (revision !== expectedRevision) return NextResponse.json({ message: "Product changed on the server. Review it before retrying." }, { status: 409 });
     }
@@ -204,18 +205,36 @@ export async function DELETE(
       const requestHash = createHash("sha256").update(JSON.stringify({ action: "product.delete", productId })).digest("hex");
       await withInventoryTransaction(client, async (session) => {
         const ledger = db.collection<any>("operationLedger");
+
         const replay = await ledger.findOne({ _id: operationId }, { session });
-        if (replay) {
-          if (replay.requestHash !== requestHash) throw new InventoryError("This delete operation ID was used for different product details", 409);
-          return;
-        }
-        const products = db.collection<any>(COLLECTION);
-        const existing = await products.findOne({ id: productId }, { session });
-        if (!existing) throw new InventoryError("Product not found", 404);
+
+if (replay) {
+  if (replay.requestHash !== requestHash) {
+    throw new InventoryError("This delete operation ID was used for different product details", 409);
+  }
+
+  return { success: true };
+}
+
+const products = db.collection<any>(COLLECTION);
+const existing = await products.findOne({ id: productId }, { session });
+
+if (!existing) {
+  await ledger.insertOne({
+    _id: operationId,
+    requestHash,
+    type: "product.delete",
+    recordId: productId,
+    createdAt: new Date(),
+  }, { session });
+
+  return { success: true };
+}
         if (Number(existing.reservedStock ?? 0) > 0) throw new InventoryError("Product has stock reserved by a pending order and cannot be deleted", 409);
         const removed = await products.deleteOne({ id: productId, $expr: { $eq: [{ $ifNull: ["$reservedStock", 0] }, 0] } }, { session });
         if (removed.deletedCount !== 1) throw new InventoryError("Product stock changed while deleting it. Review inventory and retry", 409);
         await ledger.insertOne({ _id: operationId, requestHash, type: "product.delete", recordId: productId, createdAt: new Date() }, { session });
+        return { success: true };
       });
     }
 

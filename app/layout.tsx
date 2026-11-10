@@ -7,7 +7,6 @@ import './topbar-mobile.css'
 export const metadata: Metadata = {
   title: 'Electric house — Inventory workspace',
   description: 'A calm, focused inventory and accounts workspace for modern teams.',
-  generator: 'v0.app',
   icons: {
     icon: [
       {
