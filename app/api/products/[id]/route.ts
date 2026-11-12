@@ -113,11 +113,12 @@ export async function PATCH(
     if (operationId) {
       const replay = (existing.appliedOperations ?? []).find((operation: any) => operation.id === operationId);
       if (replay) {
-        if (replay.requestHash !== requestHash) {
-        throw new InventoryError("This delete operation ID was used for different product details", 409);
+       if (replay.requestHash !== requestHash) {
+    throw new InventoryError("This delete operation ID was used for different product details", 409);
+        }
+
+     return NextResponse.json({ success: true });
       }
-       return { success: true };
-     }
       const revision = Number.isSafeInteger(existing.revision) ? existing.revision : 0;
       if (revision !== expectedRevision) return NextResponse.json({ message: "Product changed on the server. Review it before retrying." }, { status: 409 });
     }

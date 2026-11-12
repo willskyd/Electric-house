@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Barcode, CalendarDays, Check, Clock3, FileDown, Minus, Plus, Printer, Search, ShoppingCart, Trash2, X } from 'lucide-react'
-
+import { DayPicker } from 'react-day-picker'
 import type { PendingOrder, Product, Sale } from './types'
 import { money } from './utils'
 import { listQueuedOperations, readLocalCollection, saveOfflineSaleAndOperation, savePendingOrderAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '@/lib/offline-queue'
@@ -14,6 +14,17 @@ type PendingCheckout = {
   cashTendered: number
 }
 type PrintRequest = { sale: Sale; token: number }
+
+type UnitsPrintRequest = {
+  items: UnitsReport['items']
+  totalUnits: number
+  productCount: number
+  from: Date
+  to: Date
+  workspace: string
+  currency: string
+  printedAt: string
+}
 
 function moneyMinor(amount: number, currency: string) {
   return money(amount / 100, currency)
@@ -74,6 +85,26 @@ function isSalesPage(value: unknown): value is SalesPage {
 }
 
 type SalesPreset = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'this-month' | 'last-month' | 'custom'
+type UnitsReportPreset = 'today' | 'custom'
+
+type UnitsReport = {
+  items: { productId: number; name: string; quantitySold: number }[]
+  totalUnits: number
+  productCount: number
+}
+
+function isUnitsReport(value: unknown): value is UnitsReport {
+  return typeof value === 'object' && value !== null &&
+    'items' in value && Array.isArray(value.items) &&
+    value.items.every((item) =>
+      typeof item === 'object' && item !== null &&
+      'productId' in item && typeof item.productId === 'number' &&
+      'name' in item && typeof item.name === 'string' &&
+      'quantitySold' in item && typeof item.quantitySold === 'number'
+    ) &&
+    'totalUnits' in value && typeof value.totalUnits === 'number' &&
+    'productCount' in value && typeof value.productCount === 'number'
+}
 
 function localMidnight(value: Date) { return new Date(value.getFullYear(), value.getMonth(), value.getDate()) }
 
@@ -158,6 +189,17 @@ export function PosCart({
   const [periodSummary, setPeriodSummary] = useState<SalesPage['summary']>({ saleCount: 0, totalMinor: 0, unitsSold: 0 })
   const [periodLoading, setPeriodLoading] = useState(false)
   const [periodError, setPeriodError] = useState('')
+  const [unitsPreset, setUnitsPreset] = useState<UnitsReportPreset>('today')
+const [unitsFrom, setUnitsFrom] = useState('')
+const [unitsTo, setUnitsTo] = useState('')
+const [unitsReport, setUnitsReport] = useState<UnitsReport>({
+  items: [],
+  totalUnits: 0,
+  productCount: 0,
+})
+const [unitsLoading, setUnitsLoading] = useState(false)
+const [unitsError, setUnitsError] = useState('')
+const [unitsQuery, setUnitsQuery] = useState('')
   const [salesRefresh, setSalesRefresh] = useState(0)
   const [archiveSales, setArchiveSales] = useState<Sale[]>([])
   const [archiveSearch, setArchiveSearch] = useState('')
@@ -167,6 +209,8 @@ export function PosCart({
   const [archiveError, setArchiveError] = useState('')
   const [lastSale, setLastSale] = useState<Sale | null>(null)
   const [printRequest, setPrintRequest] = useState<PrintRequest | null>(null)
+  const [unitsPrintRequest, setUnitsPrintRequest] =
+  useState<UnitsPrintRequest | null>(null)
   const [printError, setPrintError] = useState('')
   const [printStatus, setPrintStatus] = useState('')
   const [printing, setPrinting] = useState(false)
@@ -220,6 +264,23 @@ export function PosCart({
   const pending = pendingCheckout !== null
   const cartLocked = pending || checkoutLoading
   const selectedRange = useMemo(() => salesRange(salesPreset, customFrom, customTo), [salesPreset, customFrom, customTo])
+  const unitsRange = useMemo(
+  () => salesRange(unitsPreset, unitsFrom, unitsTo),
+  [unitsPreset, unitsFrom, unitsTo],
+)
+const filteredUnits = useMemo(() => {
+  const value = unitsQuery.trim().toLocaleLowerCase()
+
+  return unitsReport.items
+    .filter((item) =>
+      !value || item.name.toLocaleLowerCase().includes(value)
+    )
+    .sort(
+      (a, b) =>
+        b.quantitySold - a.quantitySold ||
+        a.name.localeCompare(b.name)
+    )
+}, [unitsReport.items, unitsQuery])
   const normalizedReceiptQuery = recentQuery.trim().toLocaleLowerCase()
   const matchingRecentSales = recentSales.filter((sale) => sale.receiptNumber.toLocaleLowerCase().includes(normalizedReceiptQuery))
   const recentSaleIds = new Set(recentSales.map((sale) => sale.id))
@@ -244,6 +305,61 @@ export function PosCart({
       .finally(() => { if (!cancelled) setPeriodLoading(false) })
     return () => { cancelled = true }
   }, [active, selectedRange, salesRefresh])
+  useEffect(() => {
+  if (!active) return
+
+  if (!unitsRange || !unitsRange.from || !unitsRange.to) {
+    setUnitsLoading(false)
+    setUnitsError(
+      unitsPreset === 'custom'
+        ? 'Select both a start date and an end date.'
+        : 'Select a valid date range.',
+    )
+    setUnitsReport({ items: [], totalUnits: 0, productCount: 0 })
+    return
+  }
+
+  const params = new URLSearchParams({
+    from: unitsRange.from.toISOString(),
+    to: unitsRange.to.toISOString(),
+  })
+
+  let cancelled = false
+
+  setUnitsLoading(true)
+  setUnitsError('')
+
+  fetch(`/api/sales/units?${params.toString()}`, { cache: 'no-store' })
+    .then(async (response) => {
+      const result: unknown = await response.json().catch(() => null)
+
+      if (!response.ok || !isUnitsReport(result)) {
+        throw new Error(
+          typeof result === 'object' && result !== null &&
+          'message' in result && typeof result.message === 'string'
+            ? result.message
+            : 'Units sold report is unavailable',
+        )
+      }
+
+      if (!cancelled) setUnitsReport(result)
+    })
+    .catch((error: unknown) => {
+      if (!cancelled) {
+        setUnitsError(
+          error instanceof Error ? error.message : 'Units sold report is unavailable',
+        )
+        setUnitsReport({ items: [], totalUnits: 0, productCount: 0 })
+      }
+    })
+    .finally(() => {
+      if (!cancelled) setUnitsLoading(false)
+    })
+
+  return () => {
+    cancelled = true
+  }
+}, [active, unitsRange, unitsPreset, salesRefresh])
 
   const loadArchivePage = useCallback(async (cursor: string | null) => {
     const requestId = ++archiveRequestRef.current
@@ -328,6 +444,28 @@ export function PosCart({
       window.removeEventListener('afterprint', afterPrint)
     }
   }, [printRequest])
+
+    useEffect(() => {
+    if (!unitsPrintRequest) return
+
+    const afterPrint = () => setUnitsPrintRequest(null)
+
+    window.addEventListener('afterprint', afterPrint, { once: true })
+
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        window.print()
+      } catch (error) {
+        console.error('Units report print failed:', error)
+        setUnitsPrintRequest(null)
+      }
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('afterprint', afterPrint)
+    }
+  }, [unitsPrintRequest])
 
   const setPending = (value: PendingCheckout | null) => {
     pendingCheckoutRef.current = value
@@ -730,6 +868,26 @@ export function PosCart({
     } finally { supplyLock.current = false; setSupplyLoading(false) }
   }
 
+  const openUnitsReportPrint = () => {
+  if (!unitsRange?.from || !unitsRange?.to || unitsLoading || unitsError) {
+    return
+  }
+
+  setUnitsPrintRequest({
+    items: filteredUnits,
+    totalUnits: filteredUnits.reduce(
+      (sum, item) => sum + item.quantitySold,
+      0,
+    ),
+    productCount: filteredUnits.length,
+    from: unitsRange.from,
+    to: unitsRange.to,
+    workspace,
+    currency,
+    printedAt: new Date().toLocaleString(),
+  })
+}
+
   const openReceipt = (sale: Sale) => {
     setPrintError('')
     printTokenRef.current += 1
@@ -902,6 +1060,108 @@ export function PosCart({
             {periodError && <p className="pos-error pos-history-footnote" role="alert">{periodError}</p>}
           </section>
 
+
+          <section className="panel pos-units-report" aria-labelledby="units-report-title">
+           
+            <div className="pos-panel-heading pos-units-heading">
+              <div>
+                <h3 id="units-report-title">Units Sold Report</h3>
+                <span>Product quantities sold during the selected period</span>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={openUnitsReportPrint}
+                disabled={
+                  unitsLoading ||
+                  !!unitsError ||
+                  !unitsRange?.from ||
+                  !unitsRange?.to ||
+                  filteredUnits.length === 0 ||
+                  !!unitsPrintRequest
+                }
+              >
+                <Printer size={16} />
+                Print report
+              </button>
+            </div>
+
+            <UnitsReportRangeControls
+              preset={unitsPreset}
+              setPreset={setUnitsPreset}
+              customFrom={unitsFrom}
+              setCustomFrom={setUnitsFrom}
+              customTo={unitsTo}
+              setCustomTo={setUnitsTo}
+            />
+
+            <div className="pos-sales-metrics">
+              <div>
+                <span>Total units sold</span>
+                <b>{unitsReport.totalUnits.toLocaleString(undefined, { maximumFractionDigits: 3 })}</b>
+              </div>
+              <div>
+                <span>Products sold</span>
+                <b>{unitsReport.productCount.toLocaleString()}</b>
+              </div>
+            </div>
+
+            <label className="pos-recent-search pos-units-search">
+              <Search size={14} />
+              <input
+                value={unitsQuery}
+                onChange={(event) => setUnitsQuery(event.target.value)}
+                placeholder="Search product name"
+                aria-label="Search units sold report by product name"
+              />
+            </label>
+
+            {unitsLoading && (
+              <p className="pos-history-footnote" role="status">
+                Updating units sold report…
+              </p>
+            )}
+
+            {unitsError && (
+              <p className="pos-error pos-history-footnote" role="alert">
+                {unitsError}
+              </p>
+            )}
+
+            {!unitsLoading && !unitsError && filteredUnits.length > 0 && (
+             <div className="pos-units-table-wrap">
+            <table className="pos-table pos-units-table">
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Units sold</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredUnits.map((item) => (
+                      <tr key={item.productId}>
+                        <td><b>{item.name}</b></td>
+                        <td><b>{item.quantitySold.toLocaleString(undefined, { maximumFractionDigits: 3 })}</b></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {!unitsLoading && !unitsError && filteredUnits.length === 0 && (
+              <p className="pos-history-empty">
+                {unitsQuery.trim()
+                  ? 'No products match your search.'
+                  : 'No recorded units sold in this period.'}
+              </p>
+            )}
+
+            <p className="pos-history-footnote">
+              This report counts quantities from recorded sales. It does not represent current stock.
+            </p>
+          </section>
+
           <section className="panel pos-recent-sales">
             <div className="pos-panel-heading pos-receipts-heading"><div><h3>Recent receipts</h3><span>All saved sales · newest first</span></div><label className="pos-recent-search"><Search size={14} /><input value={recentQuery} onChange={(event) => setRecentQuery(event.target.value)} placeholder="Receipt no." aria-label="Search receipts by receipt number" /><span className="pos-visually-hidden">Search receipts by receipt number</span></label></div>
             <div className="pos-receipts-scroll" aria-live="polite">
@@ -930,8 +1190,102 @@ export function PosCart({
         <div className="receipt-payment"><span><b>Payment method:</b> Cash · Paid</span><span><b>Amount received:</b> {moneyMinor(printRequest.sale.payment.amountTenderedMinor, printRequest.sale.currency)}</span><span><b>Change:</b> {moneyMinor(printRequest.sale.payment.changeMinor, printRequest.sale.currency)}</span></div>
         <p className="receipt-thanks">Thank you for your purchase.</p>
       </div>}
+
+            {unitsPrintRequest && (
+        <div className="receipt-print receipt-units-report">
+          <header>
+            <h1><span>Electric</span><span>House</span></h1>
+            <p className="receipt-document-title">UNITS SOLD REPORT</p>
+          </header>
+
+          <div className="receipt-meta">
+            <span>Workspace: {unitsPrintRequest.workspace}</span>
+            <span>From: {displaySalesDate(formatSalesDateInput(unitsPrintRequest.from))}</span>
+            <span>
+              To: {displaySalesDate(
+                formatSalesDateInput(
+                  new Date(
+                    unitsPrintRequest.to.getFullYear(),
+                    unitsPrintRequest.to.getMonth(),
+                    unitsPrintRequest.to.getDate() - 1,
+                  ),
+                ),
+              )}
+            </span>
+            <span>Printed: {unitsPrintRequest.printedAt}</span>
+          </div>
+
+          <table className="receipt-units-table">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {unitsPrintRequest.items.map((item) => (
+                <tr key={item.productId}>
+                  <td>{item.name}</td>
+                  <td>
+                    {item.quantitySold.toLocaleString(undefined, {
+                      maximumFractionDigits: 3,
+                    })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="receipt-total">
+            <span>Products</span>
+            <b>{unitsPrintRequest.productCount}</b>
+          </div>
+
+          <div className="receipt-total receipt-final-total">
+            <span>Total units</span>
+            <b>
+              {unitsPrintRequest.totalUnits.toLocaleString(undefined, {
+                maximumFractionDigits: 3,
+              })}
+            </b>
+          </div>
+
+          <p className="receipt-thanks">
+            Reference only · Quantities reflect recorded sales, not current stock.
+          </p>
+        </div>
+      )}
     </section>}
   </>
+}
+
+function parseSalesDate(value: string): Date | undefined {
+  if (!value) return undefined
+
+  const [year, month, day] = value.split('-').map(Number)
+  if (!year || !month || !day) return undefined
+
+  return new Date(year, month - 1, day)
+}
+
+function formatSalesDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function displaySalesDate(value: string): string {
+  const date = parseSalesDate(value)
+
+  return date
+    ? date.toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      })
+    : 'Select date'
 }
 
 function SalesRangeControls({ preset, setPreset, customFrom, setCustomFrom, customTo, setCustomTo }: {
@@ -942,8 +1296,246 @@ function SalesRangeControls({ preset, setPreset, customFrom, setCustomFrom, cust
   customTo: string
   setCustomTo: (value: string) => void
 }) {
-  return <div className="pos-sales-filters"><label><CalendarDays size={14} /><span className="pos-visually-hidden">Sales date range</span><select aria-label="Sales date range" value={preset} onChange={(event) => setPreset(event.target.value as SalesPreset)}><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="this-week">This week</option><option value="last-week">Last week</option><option value="this-month">This month</option><option value="last-month">Last month</option><option value="custom">Custom range</option></select></label>{preset === 'custom' && <><label><span className="pos-visually-hidden">Start date</span><input aria-label="Custom start date" type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} /></label><label><span className="pos-visually-hidden">End date</span><input aria-label="Custom end date" type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} /></label></>}{preset !== 'today' && <button type="button" className="pos-reset-date" onClick={() => { setCustomFrom(''); setCustomTo(''); setPreset('today') }}>Today</button>}</div>
+  const [openCalendar, setOpenCalendar] = useState<'from' | 'to' | null>(null)
+
+  const fromDate = parseSalesDate(customFrom)
+  const toDate = parseSalesDate(customTo)
+
+  return (
+    <div className="pos-sales-filters">
+      <label>
+        <CalendarDays size={14} />
+        <span className="pos-visually-hidden">Sales date range</span>
+        <select
+          aria-label="Sales date range"
+          value={preset}
+          onChange={(event) => {
+            setOpenCalendar(null)
+            setPreset(event.target.value as SalesPreset)
+          }}
+        >
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="this-week">This week</option>
+          <option value="last-week">Last week</option>
+          <option value="this-month">This month</option>
+          <option value="last-month">Last month</option>
+          <option value="custom">Custom range</option>
+        </select>
+      </label>
+
+      {preset === 'custom' && (
+        <>
+          <div className="pos-sales-date-field">
+            <button
+              type="button"
+              className="pos-sales-date-trigger"
+              aria-label="Choose start date"
+              aria-haspopup="dialog"
+              aria-expanded={openCalendar === 'from'}
+              onClick={() =>
+                setOpenCalendar(openCalendar === 'from' ? null : 'from')
+              }
+            >
+              <CalendarDays size={14} />
+              <span>From: {displaySalesDate(customFrom)}</span>
+            </button>
+
+            {openCalendar === 'from' && (
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose start date">
+                <DayPicker
+                  mode="single"
+                  selected={fromDate}
+                  defaultMonth={fromDate || new Date()}
+                  disabled={toDate ? { after: toDate } : undefined}
+                  onSelect={(date) => {
+                    if (!date) return
+                    setCustomFrom(formatSalesDateInput(date))
+                    setOpenCalendar(null)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="pos-sales-date-field">
+            <button
+              type="button"
+              className="pos-sales-date-trigger"
+              aria-label="Choose end date"
+              aria-haspopup="dialog"
+              aria-expanded={openCalendar === 'to'}
+              onClick={() =>
+                setOpenCalendar(openCalendar === 'to' ? null : 'to')
+              }
+            >
+              <CalendarDays size={14} />
+              <span>To: {displaySalesDate(customTo)}</span>
+            </button>
+
+            {openCalendar === 'to' && (
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose end date">
+                <DayPicker
+                  mode="single"
+                  selected={toDate}
+                  defaultMonth={toDate || fromDate || new Date()}
+                  disabled={fromDate ? { before: fromDate } : undefined}
+                  onSelect={(date) => {
+                    if (!date) return
+                    setCustomTo(formatSalesDateInput(date))
+                    setOpenCalendar(null)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {preset !== 'today' && (
+        <button
+          type="button"
+          className="pos-reset-date"
+          onClick={() => {
+            setOpenCalendar(null)
+            setCustomFrom('')
+            setCustomTo('')
+            setPreset('today')
+          }}
+        >
+          Today
+        </button>
+      )}
+    </div>
+  )
 }
+
+
+function UnitsReportRangeControls({
+  preset,
+  setPreset,
+  customFrom,
+  setCustomFrom,
+  customTo,
+  setCustomTo,
+}: {
+  preset: UnitsReportPreset
+  setPreset: (value: UnitsReportPreset) => void
+  customFrom: string
+  setCustomFrom: (value: string) => void
+  customTo: string
+  setCustomTo: (value: string) => void
+}) {
+  const [openCalendar, setOpenCalendar] = useState<'from' | 'to' | null>(null)
+
+  const fromDate = parseSalesDate(customFrom)
+  const toDate = parseSalesDate(customTo)
+
+  return (
+    <div className="pos-sales-filters">
+      <label>
+        <CalendarDays size={14} />
+        <span className="pos-visually-hidden">Units report date range</span>
+        <select
+          aria-label="Units report date range"
+          value={preset}
+          onChange={(event) => {
+            setOpenCalendar(null)
+            setPreset(event.target.value as UnitsReportPreset)
+          }}
+        >
+          <option value="today">Today</option>
+          <option value="custom">Custom range</option>
+        </select>
+      </label>
+
+      {preset === 'custom' && (
+        <>
+          <div className="pos-sales-date-field">
+            <button
+              type="button"
+              className="pos-sales-date-trigger"
+              aria-label="Choose report start date"
+              aria-haspopup="dialog"
+              aria-expanded={openCalendar === 'from'}
+              onClick={() =>
+                setOpenCalendar(openCalendar === 'from' ? null : 'from')
+              }
+            >
+              <CalendarDays size={14} />
+              <span>From: {displaySalesDate(customFrom)}</span>
+            </button>
+
+            {openCalendar === 'from' && (
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose report start date">
+                <DayPicker
+                  mode="single"
+                  selected={fromDate}
+                  defaultMonth={fromDate || new Date()}
+                  disabled={toDate ? { after: toDate } : undefined}
+                  onSelect={(date) => {
+                    if (!date) return
+                    setCustomFrom(formatSalesDateInput(date))
+                    setOpenCalendar(null)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="pos-sales-date-field">
+            <button
+              type="button"
+              className="pos-sales-date-trigger"
+              aria-label="Choose report end date"
+              aria-haspopup="dialog"
+              aria-expanded={openCalendar === 'to'}
+              onClick={() =>
+                setOpenCalendar(openCalendar === 'to' ? null : 'to')
+              }
+            >
+              <CalendarDays size={14} />
+              <span>To: {displaySalesDate(customTo)}</span>
+            </button>
+
+            {openCalendar === 'to' && (
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose report end date">
+                <DayPicker
+                  mode="single"
+                  selected={toDate}
+                  defaultMonth={toDate || fromDate || new Date()}
+                  disabled={fromDate ? { before: fromDate } : undefined}
+                  onSelect={(date) => {
+                    if (!date) return
+                    setCustomTo(formatSalesDateInput(date))
+                    setOpenCalendar(null)
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {preset === 'custom' && (
+        <button
+          type="button"
+          className="pos-reset-date"
+          onClick={() => {
+            setOpenCalendar(null)
+            setCustomFrom('')
+            setCustomTo('')
+            setPreset('today')
+          }}
+        >
+          Today
+        </button>
+      )}
+    </div>
+  )
+}
+
+
 
 function SaleHistoryRow({ sale, currency, printing, onReprint, onOpen }: { sale: Sale; currency: string; printing: boolean; onReprint: () => void; onOpen: () => void }) {
   const itemSummary = sale.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')

@@ -622,67 +622,69 @@ export function ReturnsSection({ currency }: { currency: string }) {
             {selectedCustomer.history.map((event, index) => <li key={`${event.at}-${index}`}><b>{event.event}</b><span style={{ display: 'block', color: 'var(--muted)', fontSize: 10 }}>{event.detail} · {new Date(event.at).toLocaleString()}</span></li>)}
           </ol>
         </div>
-        <div className="return-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-{selectedCustomer.status === 'approved' && (
-  <>
-    <button
-      className="secondary-button"
-      onClick={() =>
-        void queueCustomerAction(selectedCustomer, 'inspect', {
-          condition: 'sellable',
-        })
-      }
-    >
-      <PackageCheck size={16} /> Inspect sellable
-    </button>
 
-    <button
-      className="secondary-button"
-      onClick={() =>
-        void queueCustomerAction(selectedCustomer, 'restock', {
-          confirmed: true,
-        })
-      }
-    >
-      Confirm restock
-    </button>
-
-    <div style={{ display: 'grid', gap: 8, width: '100%', maxWidth: 360 }}>
-      <label style={{ fontSize: 12, color: 'var(--muted)' }}>
-        Processed refund reference
-      </label>
-
-      <input
-        type="text"
-        value={refundReference}
-        onChange={(event) => setRefundReference(event.target.value)}
-        placeholder="Enter refund reference"
-        style={{
-          width: '100%',
-          padding: '10px 12px',
-          border: '1px solid var(--line)',
-          borderRadius: 8,
-          background: 'var(--panel)',
-          color: 'var(--fg)',
-        }}
-      />
-
+       <div className="return-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+  {selectedCustomer.status === 'pending-review' && (
+    <>
       <button
         className="primary-button"
-        disabled={!refundReference.trim()}
-        onClick={() =>
-          void queueCustomerAction(selectedCustomer, 'confirm-refund', {
+        onClick={() => void queueCustomerAction(selectedCustomer, 'approve')}
+      >
+        <Check size={16} /> Approve return
+      </button>
+
+      <button
+        className="secondary-button"
+        onClick={() => void queueCustomerAction(selectedCustomer, 'reject')}
+      >
+        <X size={16} /> Decline return
+      </button>
+    </>
+  )}
+
+  {selectedCustomer.status === 'approved' && (
+    <>
+      <button
+        className="secondary-button"
+        onClick={() => void queueCustomerAction(selectedCustomer, 'inspect', { condition: 'sellable' })}
+      >
+        <PackageCheck size={16} /> Inspect sellable
+      </button>
+
+      <button
+        className="secondary-button"
+        onClick={() => void queueCustomerAction(selectedCustomer, 'restock', { confirmed: true })}
+      >
+        Confirm restock
+      </button>
+
+      <div style={{ display: 'grid', gap: 8, minWidth: 220 }}>
+        <label>Processed refund reference</label>
+        <input
+          type="text"
+          value={refundReference}
+          onChange={(event) => setRefundReference(event.target.value)}
+          placeholder="Enter refund reference"
+        />
+        <button
+          className="primary-button"
+          disabled={!refundReference.trim()}
+          onClick={() => void queueCustomerAction(selectedCustomer, 'confirm-refund', {
             confirmed: true,
             refundReference: refundReference.trim(),
-          })
-        }
-      >
-        Confirm refund processed
-      </button>
-    </div>
-  </>
-)}          {selectedCustomer.status === 'approved' && <><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'inspect', { condition: 'sellable' })}><PackageCheck size={16} /> Inspect sellable</button><button className="secondary-button" onClick={() => void queueCustomerAction(selectedCustomer, 'restock', { confirmed: true })}>Confirm restock</button><button className="primary-button" onClick={() => { const refundReference = window.prompt('Enter the processed refund reference before confirming.'); if (refundReference?.trim()) void queueCustomerAction(selectedCustomer, 'confirm-refund', { confirmed: true, refundReference: refundReference.trim() }) }}>Confirm refund processed</button></>}
-        </div>
+          })}
+        >
+          Confirm refund processed
+        </button>
+      </div>
+    </>
+  )}
+
+  {selectedCustomer.status === 'rejected' && (
+    <p>This return has been declined.</p>
+  )}
+</div>
+
       </div>
     </section></div>}
 
