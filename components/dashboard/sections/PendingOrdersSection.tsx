@@ -112,6 +112,11 @@ export function PendingOrdersSection({ orders, setOrders, setProducts, currency,
       setNotice(savedLocally ? `Order ${updated.reference} saved on this device · waiting for Sync Now.` : `Order ${updated.reference} ${action === 'accept' ? 'accepted and payment confirmed' : 'rejected'} by the server.`)
       onActivity(savedLocally ? `Pending order ${action} saved locally` : `Pending order ${action} confirmed`, `${updated.reference} · ${updated.customerName} · ${money(updated.totalMinor / 100, currency)}`)
       window.dispatchEvent(new Event('electric-house-queue-changed'))
+      if (action === 'accept' && !savedLocally && updated.sale) {
+  void onPrint(updated.sale).catch((printError) => {
+    console.warn('Order was accepted, but automatic receipt printing failed:', printError)
+  })
+}
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Order action could not be saved')
     } finally { lock.current = false; setSaving(false) }

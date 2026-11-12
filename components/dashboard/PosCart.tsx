@@ -192,6 +192,13 @@ export function PosCart({
   const [unitsPreset, setUnitsPreset] = useState<UnitsReportPreset>('today')
 const [unitsFrom, setUnitsFrom] = useState('')
 const [unitsTo, setUnitsTo] = useState('')
+const [receiptPreset, setReceiptPreset] = useState<UnitsReportPreset>('today')
+const [receiptFrom, setReceiptFrom] = useState('')
+const [receiptTo, setReceiptTo] = useState('')
+const receiptRange = useMemo(
+  () => salesRange(receiptPreset, receiptFrom, receiptTo),
+  [receiptPreset, receiptFrom, receiptTo],
+)
 const [unitsReport, setUnitsReport] = useState<UnitsReport>({
   items: [],
   totalUnits: 0,
@@ -282,10 +289,37 @@ const filteredUnits = useMemo(() => {
     )
 }, [unitsReport.items, unitsQuery])
   const normalizedReceiptQuery = recentQuery.trim().toLocaleLowerCase()
-  const matchingRecentSales = recentSales.filter((sale) => sale.receiptNumber.toLocaleLowerCase().includes(normalizedReceiptQuery))
-  const recentSaleIds = new Set(recentSales.map((sale) => sale.id))
-  const visibleArchiveSales = archiveSearch === recentQuery ? archiveSales.filter((sale) => !recentSaleIds.has(sale.id)) : []
-  const visibleReceipts = [...matchingRecentSales, ...visibleArchiveSales]
+
+const isReceiptInRange = (sale: Sale) => {
+  if (!receiptRange) return false
+
+  const saleTime = new Date(sale.createdAt).getTime()
+  if (Number.isNaN(saleTime)) return false
+
+  return (
+    (!receiptRange.from || saleTime >= receiptRange.from.getTime()) &&
+    (!receiptRange.to || saleTime < receiptRange.to.getTime())
+  )
+}
+
+const matchingRecentSales = recentSales.filter(
+  (sale) =>
+    sale.receiptNumber.toLocaleLowerCase().includes(normalizedReceiptQuery) &&
+    isReceiptInRange(sale),
+)
+
+const recentSaleIds = new Set(recentSales.map((sale) => sale.id))
+
+const visibleArchiveSales =
+  archiveSearch === recentQuery
+    ? archiveSales.filter(
+        (sale) =>
+          !recentSaleIds.has(sale.id) &&
+          isReceiptInRange(sale),
+      )
+    : []
+
+const visibleReceipts = [...matchingRecentSales, ...visibleArchiveSales]
 
   useEffect(() => {
     if (!active) return
@@ -365,8 +399,24 @@ const filteredUnits = useMemo(() => {
     const requestId = ++archiveRequestRef.current
     setArchiveLoading(true); setArchiveError('')
     const params = new URLSearchParams({ paged: '1', limit: '50' })
-    if (recentQuery.trim()) params.set('q', recentQuery.trim())
-    if (cursor) params.set('cursor', cursor)
+
+if (recentQuery.trim()) params.set('q', recentQuery.trim())
+
+if (!receiptRange) {
+  setArchiveLoading(false)
+  setArchiveError('Enter a valid receipt date range.')
+  return
+}
+
+if (receiptRange.from) {
+  params.set('from', receiptRange.from.toISOString())
+}
+
+if (receiptRange.to) {
+  params.set('to', receiptRange.to.toISOString())
+}
+
+if (cursor) params.set('cursor', cursor)
     try {
       const response = await fetch(`/api/sales?${params.toString()}`, { cache: 'no-store' })
       const result: unknown = await response.json().catch(() => null)
@@ -382,7 +432,7 @@ const filteredUnits = useMemo(() => {
     } finally {
       if (requestId === archiveRequestRef.current) setArchiveLoading(false)
     }
-  }, [recentQuery])
+  }, [recentQuery, receiptRange])
 
   useEffect(() => {
     if (!active) return
@@ -392,7 +442,7 @@ const filteredUnits = useMemo(() => {
     setArchiveHasMore(false)
     const timer = window.setTimeout(() => { void loadArchivePage(null) }, 250)
     return () => window.clearTimeout(timer)
-  }, [active, recentQuery, salesRefresh, loadArchivePage])
+ }, [active, recentQuery, receiptPreset, receiptFrom, receiptTo, salesRefresh, loadArchivePage])
 
   useEffect(() => {
     if (!active) return
@@ -1087,6 +1137,7 @@ const filteredUnits = useMemo(() => {
             </div>
 
             <UnitsReportRangeControls
+              label="Units report"
               preset={unitsPreset}
               setPreset={setUnitsPreset}
               customFrom={unitsFrom}
@@ -1106,8 +1157,8 @@ const filteredUnits = useMemo(() => {
               </div>
             </div>
 
-            <label className="pos-recent-search pos-units-search">
-              <Search size={14} />
+            <label className="pos-recent-search pos-units-search mx-4">
+              <Search size={14}  className=''/>
               <input
                 value={unitsQuery}
                 onChange={(event) => setUnitsQuery(event.target.value)}
@@ -1164,6 +1215,15 @@ const filteredUnits = useMemo(() => {
 
           <section className="panel pos-recent-sales">
             <div className="pos-panel-heading pos-receipts-heading"><div><h3>Recent receipts</h3><span>All saved sales · newest first</span></div><label className="pos-recent-search"><Search size={14} /><input value={recentQuery} onChange={(event) => setRecentQuery(event.target.value)} placeholder="Receipt no." aria-label="Search receipts by receipt number" /><span className="pos-visually-hidden">Search receipts by receipt number</span></label></div>
+            <UnitsReportRangeControls
+            label="Receipt history"
+            preset={receiptPreset}
+            setPreset={setReceiptPreset}
+            customFrom={receiptFrom}
+            setCustomFrom={setReceiptFrom}
+            customTo={receiptTo}
+            setCustomTo={setReceiptTo}
+            />
             <div className="pos-receipts-scroll" aria-live="polite">
               {recentLoading && recentSales.length === 0 && <p className="pos-history-empty">Loading receipts…</p>}
               {recentError && <p className="pos-error pos-history-empty" role="alert">{recentError}</p>}
@@ -1412,6 +1472,7 @@ function SalesRangeControls({ preset, setPreset, customFrom, setCustomFrom, cust
 
 
 function UnitsReportRangeControls({
+  label,
   preset,
   setPreset,
   customFrom,
@@ -1419,6 +1480,7 @@ function UnitsReportRangeControls({
   customTo,
   setCustomTo,
 }: {
+   label: string
   preset: UnitsReportPreset
   setPreset: (value: UnitsReportPreset) => void
   customFrom: string
@@ -1435,9 +1497,9 @@ function UnitsReportRangeControls({
     <div className="pos-sales-filters">
       <label>
         <CalendarDays size={14} />
-        <span className="pos-visually-hidden">Units report date range</span>
+        <span className="pos-visually-hidden">{label} date range</span>
         <select
-          aria-label="Units report date range"
+          aria-label={`${label} date range`}
           value={preset}
           onChange={(event) => {
             setOpenCalendar(null)
@@ -1455,7 +1517,7 @@ function UnitsReportRangeControls({
             <button
               type="button"
               className="pos-sales-date-trigger"
-              aria-label="Choose report start date"
+              aria-label={`Choose ${label.toLowerCase()} start date`}
               aria-haspopup="dialog"
               aria-expanded={openCalendar === 'from'}
               onClick={() =>
@@ -1467,7 +1529,7 @@ function UnitsReportRangeControls({
             </button>
 
             {openCalendar === 'from' && (
-              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose report start date">
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label={`Choose ${label.toLowerCase()} start date`}>
                 <DayPicker
                   mode="single"
                   selected={fromDate}
@@ -1487,7 +1549,7 @@ function UnitsReportRangeControls({
             <button
               type="button"
               className="pos-sales-date-trigger"
-              aria-label="Choose report end date"
+             aria-label={`Choose ${label.toLowerCase()} end date`}
               aria-haspopup="dialog"
               aria-expanded={openCalendar === 'to'}
               onClick={() =>
@@ -1499,7 +1561,7 @@ function UnitsReportRangeControls({
             </button>
 
             {openCalendar === 'to' && (
-              <div className="pos-sales-calendar-popup" role="dialog" aria-label="Choose report end date">
+              <div className="pos-sales-calendar-popup" role="dialog" aria-label={`Choose ${label.toLowerCase()} end date`}>
                 <DayPicker
                   mode="single"
                   selected={toDate}
