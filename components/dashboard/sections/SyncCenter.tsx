@@ -36,7 +36,7 @@ function formattedValue(key: string, value: unknown, currency: string): string {
   if (!raw) return ''
 
   const numeric = typeof value === 'number' ? value : Number(value)
-  if (Number.isFinite(numeric) && ['amount', 'price', 'unitPrice', 'cashTendered'].includes(key)) {
+  if (Number.isFinite(numeric) && ['amount', 'price', 'unitPrice', 'costPrice', 'cashTendered'].includes(key)) {
     return money(numeric, currency)
   }
   if (Number.isFinite(numeric) && ['totalMinor', 'subtotalMinor', 'discountMinor', 'taxMinor', 'amountMinor', 'unitPriceMinor', 'lineTotalMinor', 'amountTenderedMinor', 'changeMinor'].includes(key)) {
@@ -65,6 +65,7 @@ const operationFieldGroups: Array<{ label: string; keys: string[] }> = [
   { label: 'Quantity', keys: ['quantity', 'quantityReturned'] },
   { label: 'Stock', keys: ['stock'] },
   { label: 'Unit price', keys: ['unitPrice', 'price'] },
+  { label: 'Cost price', keys: ['costPrice'] },
   { label: 'Amount', keys: ['amount', 'totalMinor'] },
   { label: 'Total units', keys: ['totalUnits', 'stockUnits'] },
   { label: 'Cartons', keys: ['cartons'] },

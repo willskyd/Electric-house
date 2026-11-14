@@ -52,6 +52,8 @@ export async function POST(request: Request) {
     const barcodeValue = body.barcode === undefined ? "" : body.barcode;
     const parsedStock = Number(stock);
     const parsedPrice = Number(price);
+    const costPriceText = body.costPrice == null ? "" : String(body.costPrice).trim();
+    const parsedCostPrice = costPriceText === "" ? null : Number(costPriceText);
 
     if (
       typeof name !== "string" || !name.trim() ||
@@ -61,6 +63,7 @@ export async function POST(request: Request) {
       typeof status !== "string" || !status.trim() ||
       stock === undefined || !Number.isFinite(parsedStock) || parsedStock < 0 ||
       price === undefined || !Number.isFinite(parsedPrice) || parsedPrice < 0 ||
+      (parsedCostPrice !== null && (!Number.isFinite(parsedCostPrice) || parsedCostPrice < 0)) ||
       typeof barcodeValue !== "string"
     ) {
       return NextResponse.json(
@@ -83,7 +86,7 @@ export async function POST(request: Request) {
     const collection = db.collection<any>(COLLECTION);
     const operationId = typeof body.operationId === "string" ? body.operationId : "";
     if (operationId && !UUID.test(operationId)) return NextResponse.json({ message: "Product operation ID is invalid" }, { status: 400 });
-    const productInput = { name: name.trim(), model: model.trim(), sku: sku.trim(), category: category.trim(), barcode, stock: parsedStock, price: parsedPrice, status: String(status).trim() };
+    const productInput = { name: name.trim(), model: model.trim(), sku: sku.trim(), category: category.trim(), barcode, stock: parsedStock, price: parsedPrice, ...(parsedCostPrice !== null ? { costPrice: parsedCostPrice } : {}), status: String(status).trim() };
     const requestHash = createHash("sha256").update(JSON.stringify(productInput)).digest("hex");
     if (operationId) {
       const replay = await collection.findOne({ _id: operationId });

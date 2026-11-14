@@ -46,14 +46,30 @@ export async function PATCH(
       "category",
       "stock",
       "price",
+      "costPrice",
       "status",
     ];
 
     const updates: Record<string, unknown> = {};
+    let unsetCostPrice = false;
 
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
         updates[field] = body[field];
+      }
+    }
+
+    if ("costPrice" in updates) {
+      const costPriceText = updates.costPrice == null ? "" : String(updates.costPrice).trim();
+      if (costPriceText === "") {
+        delete updates.costPrice;
+        unsetCostPrice = true;
+      } else {
+        const costPrice = Number(costPriceText);
+        if (!Number.isFinite(costPrice) || costPrice < 0) {
+          return NextResponse.json({ message: "Cost price must be a non-negative number" }, { status: 400 });
+        }
+        updates.costPrice = costPrice;
       }
     }
 
@@ -93,7 +109,7 @@ export async function PATCH(
       return NextResponse.json({ message: "Product status is invalid" }, { status: 400 });
     }
 
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0 && !unsetCostPrice) {
       return NextResponse.json(
         { message: "No fields to update" },
         { status: 400 }
@@ -106,14 +122,14 @@ export async function PATCH(
     const operationId = typeof body.operationId === "string" ? body.operationId : "";
     const expectedRevision = body.expectedRevision;
     if (operationId && (!UUID.test(operationId) || typeof expectedRevision !== "number" || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) return NextResponse.json({ message: "Product operation ID and revision are required" }, { status: 400 });
-    const requestHash = createHash("sha256").update(JSON.stringify(updates)).digest("hex");
+    const requestHash = createHash("sha256").update(JSON.stringify({ ...updates, ...(unsetCostPrice ? { costPrice: null } : {}) })).digest("hex");
     const existing = await collection.findOne({ id: productId });
     if (!existing) return NextResponse.json({ message: "Product not found" }, { status: 404 });
     if (typeof updates.stock === "number" && updates.stock < Number(existing.reservedStock ?? 0)) return NextResponse.json({ message: "Stock cannot be reduced below quantities reserved for pending orders" }, { status: 409 });
     if (operationId) {
       const replay = (existing.appliedOperations ?? []).find((operation: any) => operation.id === operationId);
       if (replay) {
-       if (replay.requestHash !== requestHash) {
+      if (replay.hash !== requestHash) {
     throw new InventoryError("This delete operation ID was used for different product details", 409);
         }
 
@@ -142,12 +158,19 @@ export async function PATCH(
     }
 
     const filter: Record<string, unknown> = { id: productId };
-    let update: Record<string, unknown> = { $set: updates };
+    let update: Record<string, unknown> = {
+      ...(Object.keys(updates).length > 0 ? { $set: updates } : {}),
+      ...(unsetCostPrice ? { $unset: { costPrice: "" } } : {}),
+    };
     if (operationId) {
       const revision = Number.isSafeInteger(existing.revision) ? existing.revision : 0;
       filter.revision = existing.revision ?? { $exists: false };
       filter.appliedOperations = { $not: { $elemMatch: { id: operationId } } };
-      update = { $set: { ...updates, revision: revision + 1 }, $push: { appliedOperations: { id: operationId, hash: requestHash } } };
+      update = {
+        $set: { ...updates, revision: revision + 1 },
+        ...(unsetCostPrice ? { $unset: { costPrice: "" } } : {}),
+        $push: { appliedOperations: { id: operationId, hash: requestHash } },
+      };
     }
     const result = await collection.updateOne(filter, update as any);
 

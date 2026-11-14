@@ -714,3 +714,39 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .pos-units-table th {
   font-size: 10px;
 }
+.pos-unit-price {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 112px;
+  max-width: 145px;
+  margin: auto;
+  padding: 0 8px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pos-unit-price:focus-within {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.12);
+}
+
+.pos-unit-price input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: right;
+}
+
+.app-shell.dark .pos-unit-price {
+  background: #18201b;
+  color: var(--fg);
+}

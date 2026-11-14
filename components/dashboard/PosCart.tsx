@@ -7,10 +7,14 @@ import type { PendingOrder, Product, Sale } from './types'
 import { money } from './utils'
 import { listQueuedOperations, readLocalCollection, saveOfflineSaleAndOperation, savePendingOrderAndOperation, shouldAttemptServerRequest, shouldQueueAfterServerFailure, writeLocalRecord } from '@/lib/offline-queue'
 
-type CartLine = { product: Product; quantity: number }
+type CartLine = { product: Product; quantity: number;  unitPriceMinor: number }
 type PendingCheckout = {
   idempotencyKey: string
-  items: { productId: number; quantity: number }[]
+  items: {
+    productId: number
+    quantity: number
+    unitPriceMinor: number
+  }[]
   cashTendered: number
 }
 type PrintRequest = { sale: Sale; token: number }
@@ -164,6 +168,7 @@ export function PosCart({
   const [cart, setCart] = useState<CartLine[]>([])
   const cartRef = useRef<CartLine[]>([])
   const [quantityDrafts, setQuantityDrafts] = useState<Record<number, string>>({})
+  const [unitPriceDrafts, setUnitPriceDrafts] = useState<Record<number, string>>({})
   const [barcode, setBarcode] = useState('')
   const [query, setQuery] = useState('')
   const [message, setMessage] = useState('')
@@ -263,10 +268,9 @@ const [unitsQuery, setUnitsQuery] = useState('')
     ).slice(0, 8)
   }, [products, query])
 
-  const subtotalMinor = cart.reduce((sum, line) => {
-    const unitPriceMinor = Math.round(line.product.price * 100)
-    return sum + Math.round(unitPriceMinor * line.quantity)
-  }, 0)
+ const subtotalMinor = cart.reduce((sum, line) => {
+  return sum + Math.round(line.unitPriceMinor * line.quantity)
+}, 0)
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0)
   const pending = pendingCheckout !== null
   const cartLocked = pending || checkoutLoading
@@ -524,29 +528,59 @@ if (cursor) params.set('cursor', cursor)
 
   const addProduct = (product: Product) => {
     if (cartLocked) return
-    const current = cartRef.current.find((line) => line.product.id === product.id)
+
+    const current = cartRef.current.find(
+      (line) => line.product.id === product.id
+    )
     const nextQuantity = (current?.quantity ?? 0) + 1
+
     if (!Number.isFinite(product.price) || product.price < 0) {
       setMessage(`${product.name} has an invalid selling price.`)
       return
     }
-    if (typeof product.status === 'string' && product.status.trim().toLowerCase() === 'discontinued') {
+
+    if (
+      typeof product.status === 'string' &&
+      product.status.trim().toLowerCase() === 'discontinued'
+    ) {
       setMessage(`${product.name} is discontinued and cannot be sold.`)
       return
     }
+
     const available = availableStock(product)
+
     if (!Number.isFinite(available) || available <= 0) {
       setMessage(`${product.name} is out of stock.`)
       return
     }
+
     if (nextQuantity > available) {
       setMessage(`Insufficient stock for ${product.name}. Available: ${available}.`)
       return
     }
-    updateCart((lines) => current
-      ? lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity + 1 } : line)
-      : [...lines, { product, quantity: 1 }])
-    setMessage(current ? `${product.name} quantity increased.` : `${product.name} added to cart.`)
+
+    updateCart((lines) =>
+      current
+        ? lines.map((line) =>
+            line.product.id === product.id
+              ? { ...line, quantity: line.quantity + 1 }
+              : line
+          )
+        : [
+            ...lines,
+            {
+              product,
+              quantity: 1,
+              unitPriceMinor: Math.round(product.price * 100),
+            },
+          ]
+    )
+
+    setMessage(
+      current
+        ? `${product.name} quantity increased.`
+        : `${product.name} added to cart.`
+    )
   }
 
   const changeQuantity = (id: number, rawValue: string) => {
@@ -638,11 +672,49 @@ if (cursor) params.set('cursor', cursor)
     setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next })
     setMessage('')
   }
+  const commitUnitPrice = (id: number) => {
+  const rawValue = unitPriceDrafts[id]
+  if (rawValue === undefined) return
+
+  const price = Number(rawValue)
+  const unitPriceMinor = Math.round(price * 100)
+
+  if (
+    !rawValue.trim() ||
+    !Number.isFinite(price) ||
+    price < 0 ||
+    !Number.isSafeInteger(unitPriceMinor) ||
+    Math.abs(price * 100 - unitPriceMinor) > 0.000001
+  ) {
+    setMessage('Unit price must be a valid amount with at most two decimal places.')
+    setUnitPriceDrafts((drafts) => {
+      const next = { ...drafts }
+      delete next[id]
+      return next
+    })
+    return
+  }
+
+  updateCart((lines) =>
+    lines.map((line) =>
+      line.product.id === id ? { ...line, unitPriceMinor } : line
+    )
+  )
+
+  setUnitPriceDrafts((drafts) => {
+    const next = { ...drafts }
+    delete next[id]
+    return next
+  })
+
+  setMessage('')
+}
 
   const markSaleCompleted = async (sale: Sale, locallyQueued = false) => {
     await writeLocalRecord('sales', sale.id, sale, locallyQueued).catch((error) => console.warn('Could not cache completed sale history:', error))
     updateCart(() => [])
     setQuantityDrafts({})
+    setUnitPriceDrafts({})
     setCashTendered('')
     setPending(null)
     setLastSale(sale)
@@ -703,7 +775,11 @@ if (cursor) params.set('cursor', cursor)
       }
       request = {
         idempotencyKey: crypto.randomUUID(),
-        items: cartRef.current.map(({ product, quantity }) => ({ productId: product.id, quantity })),
+        items: cartRef.current.map(({ product, quantity, unitPriceMinor }) => ({
+        productId: product.id,
+        quantity,
+        unitPriceMinor,
+     })),
         cashTendered: tender,
       }
       setPending(request)
@@ -713,7 +789,25 @@ if (cursor) params.set('cursor', cursor)
     setMessage('Checkout processing…')
     setPrintError('')
     const saveOfflineCheckout = async () => {
-      const localLines = cartRef.current.map(({ product, quantity }) => ({ productId: product.id, name: product.name, sku: product.sku, barcode: product.barcode ?? '', quantity, unitPriceMinor: Math.round(product.price * 100), lineTotalMinor: Math.round(Math.round(product.price * 100) * quantity) }))
+const localLines = request.items.map((item) => {
+  const line = cartRef.current.find(
+    (cartLine) => cartLine.product.id === item.productId
+  )
+
+  if (!line) {
+    throw new Error('A checkout product is missing. Please reload the cart before retrying.')
+  }
+
+  return {
+    productId: item.productId,
+    name: line.product.name,
+    sku: line.product.sku,
+    barcode: line.product.barcode ?? '',
+    quantity: item.quantity,
+    unitPriceMinor: item.unitPriceMinor,
+    lineTotalMinor: Math.round(item.unitPriceMinor * item.quantity),
+  }
+})
       const totalMinor = localLines.reduce((sum, line) => sum + line.lineTotalMinor, 0)
       if (!Number.isSafeInteger(totalMinor) || totalMinor < 0 || localLines.some((line) => !Number.isSafeInteger(line.unitPriceMinor) || line.unitPriceMinor < 0 || !Number.isSafeInteger(line.lineTotalMinor) || line.lineTotalMinor < 0)) throw new Error('The cart total is outside the supported payment range.')
       if (Math.round(request.cashTendered * 100) < totalMinor) throw new Error('Cash received is less than the amount due.')
@@ -844,24 +938,103 @@ if (cursor) params.set('cursor', cursor)
       return !value || !Number.isFinite(quantity) || quantity <= 0 || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001
     })
     if (!quantitiesValid) { setMessage('Fix the invalid quantity before submitting this order.'); return }
-    const lines = cartRef.current.map(({ product, quantity }) => ({ product, quantity }))
-    for (const line of lines) {
-      const available = availableStock(line.product)
-      if (line.quantity > available) { setMessage(`Insufficient available stock for ${line.product.name}. Available: ${available}.`); return }
-      if (!Number.isFinite(line.product.price) || line.product.price < 0) { setMessage(`${line.product.name} has an invalid selling price.`); return }
+   const lines = cartRef.current.map(
+  ({ product, quantity, unitPriceMinor }) => ({
+    product,
+    quantity,
+    unitPriceMinor,
+  })
+)
+
+for (const line of lines) {
+  const available = availableStock(line.product)
+
+  if (line.quantity > available) {
+    setMessage(
+      `Insufficient available stock for ${line.product.name}. Available: ${available}.`
+    )
+    return
+  }
+
+  if (
+    !Number.isSafeInteger(line.unitPriceMinor) ||
+    line.unitPriceMinor < 0
+  ) {
+    setMessage(`${line.product.name} has an invalid cart unit price.`)
+    return
+  }
+}
+
+const items = lines.map(({ product, quantity, unitPriceMinor }) => ({
+  productId: product.id,
+  quantity,
+  unitPriceMinor,
+}))
+
+const id = crypto.randomUUID()
+const createdAt = new Date().toISOString()
+const reference = `PO-${createdAt.slice(0, 10).replaceAll('-', '')}-${id.slice(0, 8).toUpperCase()}`
+
+const orderItems = lines.map(
+  ({ product, quantity, unitPriceMinor }) => {
+    const lineTotalMinor = Math.round(unitPriceMinor * quantity)
+
+    return {
+      productId: product.id,
+      name: product.name,
+      sku: product.sku || product.model,
+      barcode: product.barcode ?? '',
+      quantity,
+      unitPriceMinor,
+      lineTotalMinor,
     }
-    const items = lines.map(({ product, quantity }) => ({ productId: product.id, quantity }))
-    const id = crypto.randomUUID()
-    const createdAt = new Date().toISOString()
-    const reference = `PO-${createdAt.slice(0, 10).replaceAll('-', '')}-${id.slice(0, 8).toUpperCase()}`
-    const orderItems = lines.map(({ product, quantity }) => {
-      const unitPriceMinor = Math.round(product.price * 100)
-      return { productId: product.id, name: product.name, sku: product.sku || product.model, barcode: product.barcode ?? '', quantity, unitPriceMinor, lineTotalMinor: Math.round(unitPriceMinor * quantity) }
-    })
-    const totalMinor = orderItems.reduce((sum, line) => sum + line.lineTotalMinor, 0)
-    if (!Number.isSafeInteger(totalMinor) || orderItems.some((line) => !Number.isSafeInteger(line.lineTotalMinor))) { setMessage('Order total is outside the supported amount.'); return }
-    const localOrder: PendingOrder = { id, reference, status: 'Pending', customerName: customerName.trim(), customerPhone: customerPhone.trim(), createdAt, items: orderItems, subtotalMinor: totalMinor, totalMinor, history: [{ at: createdAt, actor: 'You (this device)', event: 'Order submitted' }], localPending: true }
-    const payload = { operationId: id, customerName: localOrder.customerName, customerPhone: localOrder.customerPhone, items }
+  }
+)
+
+const totalMinor = orderItems.reduce(
+  (sum, line) => sum + line.lineTotalMinor,
+  0
+)
+
+if (
+  !Number.isSafeInteger(totalMinor) ||
+  totalMinor < 0 ||
+  orderItems.some(
+    (line) =>
+      !Number.isSafeInteger(line.unitPriceMinor) ||
+      !Number.isSafeInteger(line.lineTotalMinor)
+  )
+) {
+  setMessage('Order total is outside the supported amount.')
+  return
+}
+
+const localOrder: PendingOrder = {
+  id,
+  reference,
+  status: 'Pending',
+  customerName: customerName.trim(),
+  customerPhone: customerPhone.trim(),
+  createdAt,
+  items: orderItems,
+  subtotalMinor: totalMinor,
+  totalMinor,
+  history: [
+    {
+      at: createdAt,
+      actor: 'You (this device)',
+      event: 'Order submitted',
+    },
+  ],
+  localPending: true,
+}
+
+const payload = {
+  operationId: id,
+  customerName: localOrder.customerName,
+  customerPhone: localOrder.customerPhone,
+  items,
+}
     supplyLock.current = true; setSupplyLoading(true); setMessage('Saving supply order…')
     const saveLocally = async () => {
       const queued = await listQueuedOperations()
@@ -1070,13 +1243,38 @@ if (cursor) params.set('cursor', cursor)
             {cart.length === 0 ? <div className="pos-empty"><ShoppingCart /><b>Your cart is empty</b><span>Scan or search for an inventory product to get started.</span></div> : <>
               <div className="pos-table-wrap"><table className="pos-table">
                 <thead><tr><th>Product</th><th>Unit price</th><th>Quantity</th><th>Line total</th><th><span className="pos-visually-hidden">Actions</span></th></tr></thead>
-                <tbody>{cart.map(({ product, quantity }) => <tr key={product.id}>
+                <tbody>{cart.map(({ product, quantity, unitPriceMinor }) => <tr key={product.id}>
                   <td><b>{product.name}</b><small>{product.sku || product.model}{product.barcode ? ` · ${product.barcode}` : ''}</small></td>
-                  <td>{money(product.price, currency)}</td>
+                 <td>
+  <div className="pos-unit-price">
+    <span>{currency}</span>
+    <input
+      aria-label={`${product.name} unit price`}
+      type="number"
+      min="0"
+      step="0.01"
+      value={unitPriceDrafts[product.id] ?? (unitPriceMinor / 100).toFixed(2)}
+      disabled={cartLocked}
+      onChange={(event) =>
+        setUnitPriceDrafts((drafts) => ({
+          ...drafts,
+          [product.id]: event.target.value,
+        }))
+      }
+      onBlur={() => commitUnitPrice(product.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          event.currentTarget.blur()
+        }
+      }}
+    />
+  </div>
+</td>
                   <td><div className="pos-quantity"><button type="button" aria-label={`Decrease ${product.name} quantity`} disabled={cartLocked} onClick={() => { setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[product.id]; return next }); quantity <= 1 ? updateCart((lines) => lines.filter((line) => line.product.id !== product.id)) : updateCart((lines) => lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity - 1 } : line)) }}><Minus /></button>
                     <input aria-label={`${product.name} quantity`} type="number" min="0.001" step="0.001" value={quantityDrafts[product.id] ?? quantity} disabled={cartLocked} onChange={(event) => changeQuantity(product.id, event.target.value)} onBlur={() => commitQuantity(product.id)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }} />
                     <button type="button" aria-label={`Increase ${product.name} quantity`} disabled={cartLocked || quantity + 1 > availableStock(product)} onClick={() => { setQuantityDrafts((drafts) => { const next = { ...drafts }; delete next[product.id]; return next }); updateCart((lines) => lines.map((line) => line.product.id === product.id ? { ...line, quantity: line.quantity + 1 } : line)) }}><Plus /></button></div></td>
-                  <td><b>{moneyMinor(Math.round(Math.round(product.price * 100) * quantity), currency)}</b></td>
+                <td><b>{moneyMinor(Math.round(unitPriceMinor * quantity), currency)}</b></td>
                   <td><button className="pos-icon-action pos-remove" type="button" disabled={cartLocked} onClick={() => updateCart((lines) => lines.filter((line) => line.product.id !== product.id))} aria-label={`Remove ${product.name}`}><Trash2 /></button></td>
                 </tr>)}</tbody>
               </table></div>

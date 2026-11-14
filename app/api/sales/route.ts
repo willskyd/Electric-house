@@ -53,34 +53,99 @@ function isTransactionUnavailable(error: unknown): boolean {
     (typeof message === "string" && message.includes("Transaction numbers are only allowed"));
 }
 
-function normalizeCheckoutItems(value: unknown): { productId: number; quantity: number; quantityMilli: number }[] {
+function normalizeCheckoutItems(value: unknown): {
+  productId: number
+  quantity: number
+  quantityMilli: number
+  unitPriceMinor?: number
+}[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 500) {
-    throw new CheckoutError("Add at least one product before checkout", 400);
+    throw new CheckoutError("Add at least one product before checkout", 400)
   }
 
-  const quantities = new Map<number, number>();
+  const items = new Map<number, {
+    quantityMilli: number
+    unitPriceMinor?: number
+  }>()
+
   for (const entry of value) {
-    if (typeof entry !== "object" || entry === null || !("productId" in entry) || !("quantity" in entry)) {
-      throw new CheckoutError("Cart item is invalid", 400);
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("productId" in entry) ||
+      !("quantity" in entry)
+    ) {
+      throw new CheckoutError("Cart item is invalid", 400)
     }
-    const { productId, quantity } = entry;
-    if (typeof productId !== "number" || !Number.isSafeInteger(productId) || productId <= 0 ||
-      typeof quantity !== "number" || !Number.isFinite(quantity) || quantity <= 0 || quantity > 1_000_000) {
-      throw new CheckoutError("Product IDs and quantities must be valid positive numbers", 400);
+
+    const { productId, quantity } = entry
+
+    if (
+      typeof productId !== "number" ||
+      !Number.isSafeInteger(productId) ||
+      productId <= 0 ||
+      typeof quantity !== "number" ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      quantity > 1_000_000
+    ) {
+      throw new CheckoutError(
+        "Product IDs and quantities must be valid positive numbers",
+        400
+      )
     }
-    const quantityMilli = Math.round(quantity * 1000);
+
+    const quantityMilli = Math.round(quantity * 1000)
+
     if (Math.abs(quantity * 1000 - quantityMilli) > 0.000001) {
-      throw new CheckoutError("Quantities can have at most three decimal places", 400);
+      throw new CheckoutError(
+        "Quantities can have at most three decimal places",
+        400
+      )
     }
-    quantities.set(productId, (quantities.get(productId) ?? 0) + quantityMilli);
+
+    const hasCustomPrice = "unitPriceMinor" in entry
+    const unitPriceMinor = hasCustomPrice
+      ? entry.unitPriceMinor
+      : undefined
+
+    if (
+      hasCustomPrice &&
+      (
+        typeof unitPriceMinor !== "number" ||
+        !Number.isSafeInteger(unitPriceMinor) ||
+        unitPriceMinor < 0
+      )
+    ) {
+      throw new CheckoutError("Cart unit price is invalid", 400)
+    }
+
+    const previous = items.get(productId)
+
+    if (previous && previous.unitPriceMinor !== unitPriceMinor) {
+      throw new CheckoutError(
+        "Duplicate products cannot have different unit prices",
+        400
+      )
+    }
+
+    items.set(productId, {
+      quantityMilli: (previous?.quantityMilli ?? 0) + quantityMilli,
+      ...(unitPriceMinor !== undefined ? { unitPriceMinor } : {}),
+    })
   }
 
-  return [...quantities.entries()].map(([productId, quantityMilli]) => ({
+  return [...items.entries()].map(([productId, item]) => ({
     productId,
-    quantity: quantityMilli / 1000,
-    quantityMilli,
-  }));
+    quantity: item.quantityMilli / 1000,
+    quantityMilli: item.quantityMilli,
+    ...(item.unitPriceMinor !== undefined
+      ? { unitPriceMinor: item.unitPriceMinor }
+      : {}),
+  }))
 }
+
+
 
 function parseCashTendered(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER / 100) {
@@ -188,7 +253,7 @@ export async function POST(request: Request) {
     const items = normalizeCheckoutItems(body.items);
     const amountTenderedMinor = parseCashTendered(body.cashTendered);
     const requestHash = createHash("sha256")
-      .update(JSON.stringify({ items: items.map(({ productId, quantityMilli }) => ({ productId, quantityMilli })), amountTenderedMinor }))
+      .update(JSON.stringify({ items: items.map(({ productId, quantityMilli, unitPriceMinor }) => ({ productId, quantityMilli, unitPriceMinor })), amountTenderedMinor }))
       .digest("hex");
 
     const client = await clientPromise();
@@ -239,8 +304,11 @@ export async function POST(request: Request) {
           if (typeof product.price !== "number" || !Number.isFinite(product.price) || product.price < 0 || product.price > Number.MAX_SAFE_INTEGER / 100) {
             throw new CheckoutError(`${product.name} has an invalid selling price`, 409);
           }
-          const unitPriceMinor = Math.round(product.price * 100);
+         const unitPriceMinor = item.unitPriceMinor ?? Math.round(product.price * 100);
           const lineTotalMinor = Math.round(unitPriceMinor * item.quantityMilli / 1000);
+          if (!Number.isSafeInteger(lineTotalMinor) || lineTotalMinor < 0) {
+         throw new CheckoutError(`${product.name} has an invalid line total`,400 );
+        }
           return {
             productId: product.id,
             name: String(product.name ?? "Product"),

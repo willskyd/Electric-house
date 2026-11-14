@@ -61,6 +61,8 @@ function isProductList(value: unknown): value is Product[] {
     'model' in item && typeof item.model === 'string' &&
     'sku' in item && typeof item.sku === 'string' &&
     (!('barcode' in item) || typeof item.barcode === 'string') &&
+    (!('costPrice' in item) || item.costPrice === null ||
+    (typeof item.costPrice === 'number' && Number.isFinite(item.costPrice) && item.costPrice >= 0)) &&
     'category' in item && typeof item.category === 'string' &&
     'stock' in item && typeof item.stock === 'number' &&
     'price' in item && typeof item.price === 'number' &&
@@ -659,7 +661,9 @@ const formatCurrency = (amount: number) => {
   const sku = model || `NEW-${String(Date.now()).slice(-4)}`
   const category = String(f.get('category') || '').trim()
   const price = Number(f.get('price'))
-  if (!name || !category || !Number.isFinite(stock) || stock < 0 || !Number.isFinite(price) || price < 0 || barcode.length > 128 || /[\u0000-\u001f\u007f]/.test(barcode)) {
+  const costPriceText = String(f.get('costPrice') || '').trim()
+  const costPrice = costPriceText === '' ? null : Number(costPriceText)
+  if (!name || !category || (costPrice !== null && (!Number.isFinite(costPrice) || costPrice < 0)) || !Number.isFinite(stock) || stock < 0 || !Number.isFinite(price) || price < 0 || barcode.length > 128 || /[\u0000-\u001f\u007f]/.test(barcode)) {
     setToast('Enter a product name, category, valid stock and price, and a valid barcode')
     return
   }
@@ -678,6 +682,7 @@ const formatCurrency = (amount: number) => {
     category,
     stock,
     price,
+    ...(costPrice !== null ? { costPrice } : {}),
     status: stock === 0
       ? 'Out of stock'
       : stock <= Math.max(0, Number(settings.lowStockThreshold) || 0)
@@ -1679,7 +1684,7 @@ function ProductTable({
   onNotify: (s: string) => void
   onSaveEdit: (
     id: number,
-    updates: Partial<Pick<Product, 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'status'>>
+    updates: Partial<Pick<Product, 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'costPrice' | 'status'>>
   ) => Promise<void>
   onDelete: (id: number) => void
   lowStockThreshold: number
@@ -1698,13 +1703,17 @@ function ProductTable({
   }
 
   const updateDraft = (
-    key: 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'status',
+    key: 'name' | 'model' | 'barcode' | 'category' | 'stock' | 'price' | 'costPrice' | 'status',
     value: string
   ) => {
     setDraft((current) => {
       if (!current) return current
 
-      if (key === 'stock' || key === 'price') {
+      if (key === 'costPrice' && value.trim() === '') {
+        return { ...current, costPrice: null }
+      }
+
+      if (key === 'stock' || key === 'price' || key === 'costPrice') {
         const numberValue = Number(value)
         return {
           ...current,
@@ -1735,6 +1744,7 @@ function ProductTable({
         category: draft.category.trim(),
         stock: draft.stock,
         price: draft.price,
+        costPrice: draft.costPrice ?? null,
         status: draft.status === 'Discontinued' ? 'Discontinued' : 'Automatic',
       })
       setDraft(null)
@@ -1754,6 +1764,7 @@ function ProductTable({
             <th>Category</th>
             <th>In stock</th>
             <th>Unit price</th>
+            <th>Cost price</th>
             <th>Status</th>
             <th />
           </tr>
@@ -1847,6 +1858,20 @@ function ProductTable({
                       aria-label={`Price for ${product.name}`}
                     />
                   ) : product.price}
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <input
+                      className="table-number price"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.costPrice ?? ''}
+                      onChange={(e) => updateDraft('costPrice', e.target.value)}
+                      aria-label={`Cost price for ${product.name}`}
+                    />
+                  ) : product.costPrice != null ? product.costPrice : '—'}
                 </td>
 
                 <td>
@@ -2364,6 +2389,7 @@ function RecordModal({ type, onClose, onSubmit, saving = false }: { type: 'produ
           <label>Model number<input name="model" placeholder="Model number" /></label>
           <label>Barcode (optional)<input name="barcode" type="text" inputMode="text" autoComplete="off" maxLength={128} placeholder="Keep leading zeroes" /></label>
           <label>Price<input name="price" type="number" min="0" step="0.01" required /></label>
+          <label>Cost price<input name="costPrice" type="number" min="0" step="0.01" /></label>
           <label>Quantity<input name="stock" type="number" min="0" required /></label>
         </div>}
         {type === 'receipt' && <><label>Model number<input name="model" required placeholder="Model number" /></label><div className="form-row"><label>Quantity<input name="quantity" type="number" min="0" required /></label><label>Invoice<input name="invoice" required placeholder="Invoice number" /></label></div></>}

@@ -13,16 +13,73 @@ function publicOrder(value: OrderDoc) {
   return order
 }
 
-function parseItems(value: unknown) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new InventoryError('Add at least one product to the pending order')
-  const quantities = new Map<number, number>()
-  for (const line of value) {
-    if (!line || typeof line !== 'object' || !('productId' in line) || !('quantity' in line) || typeof line.productId !== 'number' || !Number.isSafeInteger(line.productId) || line.productId <= 0 || typeof line.quantity !== 'number' || !Number.isFinite(line.quantity) || line.quantity <= 0 || line.quantity > 1_000_000 || Math.abs(line.quantity * 1000 - Math.round(line.quantity * 1000)) > 0.000001) throw new InventoryError('Pending order items or quantities are invalid')
-    quantities.set(line.productId, Math.round(((quantities.get(line.productId) ?? 0) + line.quantity) * 1000) / 1000)
+function parseItems(value: unknown): {
+  productId: number
+  quantity: number
+  unitPriceMinor?: number
+}[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    throw new InventoryError('Add at least one product to the pending order')
   }
-  return [...quantities].map(([productId, quantity]) => ({ productId, quantity }))
-}
 
+  const items = new Map<number, {
+    quantityMilli: number
+    unitPriceMinor?: number
+  }>()
+
+  for (const line of value) {
+    if (
+      !line ||
+      typeof line !== 'object' ||
+      !('productId' in line) ||
+      !('quantity' in line) ||
+      typeof line.productId !== 'number' ||
+      !Number.isSafeInteger(line.productId) ||
+      line.productId <= 0 ||
+      typeof line.quantity !== 'number' ||
+      !Number.isFinite(line.quantity) ||
+      line.quantity <= 0 ||
+      line.quantity > 1_000_000 ||
+      Math.abs(line.quantity * 1000 - Math.round(line.quantity * 1000)) > 0.000001
+    ) {
+      throw new InventoryError('Pending order items or quantities are invalid')
+    }
+
+    const unitPriceMinor =
+      'unitPriceMinor' in line ? line.unitPriceMinor : undefined
+
+    if (
+      unitPriceMinor !== undefined &&
+      (
+        typeof unitPriceMinor !== 'number' ||
+        !Number.isSafeInteger(unitPriceMinor) ||
+        unitPriceMinor < 0
+      )
+    ) {
+      throw new InventoryError('Pending order unit price is invalid')
+    }
+
+    const previous = items.get(line.productId)
+
+    if (previous && previous.unitPriceMinor !== unitPriceMinor) {
+      throw new InventoryError('Duplicate products cannot have different unit prices')
+    }
+
+    items.set(line.productId, {
+      quantityMilli:
+        (previous?.quantityMilli ?? 0) + Math.round(line.quantity * 1000),
+      ...(unitPriceMinor !== undefined ? { unitPriceMinor } : {}),
+    })
+  }
+
+  return [...items.entries()].map(([productId, item]) => ({
+    productId,
+    quantity: item.quantityMilli / 1000,
+    ...(item.unitPriceMinor !== undefined
+      ? { unitPriceMinor: item.unitPriceMinor }
+      : {}),
+  }))
+}
 export async function GET() {
   try {
     const client = await clientPromise()
@@ -77,7 +134,7 @@ export async function POST(request: Request) {
           if (!product || typeof product.stock !== 'number') throw new InventoryError(`Product ${requested.productId} is no longer available`, 409)
           if (String(product.status ?? '').trim().toLowerCase() === 'discontinued') throw new InventoryError(`${product.name} is discontinued`, 409)
           if (typeof product.price !== 'number' || !Number.isFinite(product.price) || product.price < 0 || product.price > Number.MAX_SAFE_INTEGER / 100) throw new InventoryError(`${product.name} has an invalid price`, 409)
-          const unitPriceMinor = Math.round(product.price * 100)
+         const unitPriceMinor = requested.unitPriceMinor ?? Math.round(product.price * 100)
           const lineTotalMinor = Math.round(unitPriceMinor * requested.quantity)
           if (!Number.isSafeInteger(lineTotalMinor)) throw new InventoryError('Pending order total exceeds the supported amount')
           const reservation = await products.updateOne({ id: requested.productId, $expr: { $gte: [{ $subtract: ['$stock', { $ifNull: ['$reservedStock', 0] }] }, requested.quantity] }, status: { $not: /^Discontinued$/i } }, { $inc: { reservedStock: requested.quantity } }, { session })

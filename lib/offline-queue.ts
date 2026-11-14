@@ -329,8 +329,9 @@ export async function saveOfflineSaleAndOperation<T extends { id: string }>(
           const availableStock = Number(product?.stock) - Number(product?.reservedStock ?? 0)
           if (!cached || cached.tombstone || !product || product.id !== item.productId) validationError ||= `Product ${item.productId} is not available in local inventory.`
           else if (typeof product.stock !== 'number' || !Number.isFinite(product.stock) || !Number.isFinite(availableStock) || !Number.isFinite(item.quantity) || item.quantity <= 0 || availableStock < item.quantity) validationError ||= `Insufficient locally available stock for ${String(product.name ?? 'product')}. Available: ${Math.max(0, availableStock)}.`
-          else if (typeof product.price !== 'number' || !Number.isFinite(product.price) || Math.round(product.price * 100) !== item.unitPriceMinor) validationError ||= `${String(product.name ?? 'Product')} changed in local inventory. Review the cart price before checkout.`
-          else if (String(product.status ?? '').trim().toLowerCase() === 'discontinued') validationError ||= `${String(product.name ?? 'Product')} is discontinued and cannot be sold.`
+         else if (typeof product.price !== 'number' || !Number.isFinite(product.price) || product.price < 0) validationError ||= `${String(product.name ?? 'Product')} has an invalid stock price.`
+         else if (!Number.isSafeInteger(item.unitPriceMinor) || item.unitPriceMinor < 0) validationError ||= `${String(product.name ?? 'Product')} has an invalid cart unit price.`          
+         else if (String(product.status ?? '').trim().toLowerCase() === 'discontinued') validationError ||= `${String(product.name ?? 'Product')} is discontinued and cannot be sold.`
           else {
             const stock = Math.round((product.stock - item.quantity) * 1000) / 1000
             updates.push({ ...product, stock, status: stock <= 0 ? 'Out of stock' : stock <= lowStockThreshold ? 'Low stock' : 'In stock' })
@@ -390,8 +391,9 @@ export async function savePendingOrderAndOperation<T extends { id: string; items
           const reserved = Number(product?.reservedStock ?? 0)
           if (!cached || cached.tombstone || !product || product.id !== item.productId || !Number.isFinite(stock) || !Number.isFinite(reserved)) validationError ||= `Product ${item.productId} is not available in local inventory.`
           else if (action === 'reserve' && stock - reserved < item.quantity) validationError ||= `Insufficient available stock for ${String(product.name ?? 'product')}. Available: ${Math.max(0, stock - reserved)}.`
-          else if (action === 'reserve' && typeof item.unitPriceMinor === 'number' && (!Number.isSafeInteger(item.unitPriceMinor) || item.unitPriceMinor < 0 || typeof product.price !== 'number' || Math.round(product.price * 100) !== item.unitPriceMinor)) validationError ||= `${String(product.name ?? 'Product')} changed in local inventory. Review the order price before submitting.`
-          else if (action !== 'reserve' && reserved < item.quantity) validationError ||= `The local reservation for ${String(product.name ?? 'product')} is missing or changed.`
+          else if (action === 'reserve' && item.unitPriceMinor !== undefined && (!Number.isSafeInteger(item.unitPriceMinor) || item.unitPriceMinor < 0)) validationError ||= `${String(product.name ?? 'Product')} has an invalid cart unit price.`         
+          else if (action === 'reserve' && item.unitPriceMinor === undefined && (typeof product.price !== 'number' || !Number.isFinite(product.price) || product.price < 0)) validationError ||= `${String(product.name ?? 'Product')} has an invalid stock price.`          
+         else if (action !== 'reserve' && reserved < item.quantity) validationError ||= `The local reservation for ${String(product.name ?? 'product')} is missing or changed.`
           else {
             const nextStock = action === 'accept' ? Math.round((stock - item.quantity) * 1000) / 1000 : stock
             const nextReserved = Math.round((reserved + (action === 'reserve' ? item.quantity : -item.quantity)) * 1000) / 1000
